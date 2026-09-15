@@ -235,6 +235,15 @@ def normalize_engine_config(payload: dict[str, Any]) -> dict[str, Any]:
             "Fundamentals Analyst",
         ]
 
+    stages = (
+        payload.get("stages")
+        or payload.get("selected_stages")
+        or params.get("stages")
+        or params.get("selected_stages")
+        or []
+    )
+    stages = [str(x).strip() for x in stages if str(x).strip()]
+
     return {
         "ticker": ticker,
         "analysisDate": analysis_date,
@@ -243,6 +252,7 @@ def normalize_engine_config(payload: dict[str, Any]) -> dict[str, Any]:
         "deepModel": str(deep_model).strip(),
         "researchDepth": str(research_depth).strip() or "Shallow",
         "analysts": analysts,
+        "stages": stages,
         "language": str(language).strip() or "English",
         "params": params,
     }
@@ -640,6 +650,7 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
                 _import_module,
                 _extract_reports_from_state,
                 on_update,
+                config.get("stages"),
             )
             normalized = _normalize_propagate_result(final_state, decision, selected_analysts)
             normalized.setdefault("_engine_adapter", {})
