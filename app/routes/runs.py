@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.artifacts import (
@@ -298,26 +298,17 @@ def result_html_route(run_id: str) -> HTMLResponse:
 
 
 @router.get("/runs/{run_id}/status")
-def run_status_route(run_id: str) -> JSONResponse:
-    from app.services.analyze_service import get_run
+def run_status_route(run_id: str, if_none_match: Optional[str] = Header(default=None)) -> Response:
+    from app.services.analyze_service import get_run_status
 
-    run = get_run(run_id)
-    if not run:
+    payload = get_run_status(run_id)
+    if not payload:
         raise HTTPException(status_code=404, detail="Run not found.")
-
-    payload = {
-        "run_id": run["run_id"],
-        "status": run["status"],
-        "created_at": run.get("created_at"),
-        "updated_at": run.get("updated_at"),
-        "started_at": run.get("started_at"),
-        "completed_at": run.get("completed_at"),
-        "progress": run.get("progress"),
-        "error": run.get("error"),
-        "cancel_requested": run.get("cancel_requested"),
-        "poll_after_ms": run.get("poll_after_ms"),
-    }
-    return JSONResponse(content=payload)
+    etag = f'"run-{run_id}-{payload["version"]}"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if if_none_match == etag:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(content=payload, headers=headers)
 
 
 @router.get("/runs/{run_id}/logs")

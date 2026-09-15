@@ -6,7 +6,7 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -553,7 +553,7 @@ def _detect_asset_type(ticker: str) -> str:
     return "stock"
 
 
-def _invoke_graph_class(cls: Any, config: dict[str, Any]) -> dict[str, Any]:
+def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None) -> dict[str, Any]:
     ta_config = _build_tradingagents_config(config)
     selected_analysts = _map_analysts_to_selected(config.get("analysts"))
 
@@ -620,14 +620,32 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any]) -> dict[str, Any]:
         flush=True,
     )
 
-    try:
-        result = propagate(ticker, analysis_date, asset_type=asset_type)
-    except TypeError as exc:
-        print(
-            f"[tradingagents_service] propagate(..., asset_type=...) raised TypeError: {exc}; retrying without asset_type",
-            flush=True,
-        )
-        result = propagate(ticker, analysis_date)
+    # Current TradingAgents exposes per-node deltas through graph.stream. Use it
+    # when a publisher is supplied; otherwise preserve the stable propagate API.
+    stream_graph = getattr(graph, "graph", None)
+    stream = getattr(stream_graph, "stream", None)
+    propagator = getattr(graph, "propagator", None)
+    if on_update and callable(stream) and propagator is not None:
+        init_state = propagator.create_initial_state(ticker, analysis_date, asset_type=asset_type)
+        args = propagator.get_graph_args()
+        final_state: dict[str, Any] = {}
+        for chunk in stream(init_state, **args):
+            if not isinstance(chunk, dict):
+                continue
+            final_state.update(chunk)
+            for report_name, content in _extract_reports_from_state(chunk).items():
+                on_update(report_name, content)
+        decision = final_state.get("final_trade_decision")
+        result = (final_state, decision)
+    else:
+        try:
+            result = propagate(ticker, analysis_date, asset_type=asset_type)
+        except TypeError as exc:
+            print(
+                f"[tradingagents_service] propagate(..., asset_type=...) raised TypeError: {exc}; retrying without asset_type",
+                flush=True,
+            )
+            result = propagate(ticker, analysis_date)
 
     print(
         f"[tradingagents_service] propagate returned type={type(result).__name__}",
@@ -663,7 +681,7 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any]) -> dict[str, Any]:
     return coerced
 
 
-def _call_tradingagents_package(config: dict[str, Any]) -> dict[str, Any]:
+def _call_tradingagents_package(config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None) -> dict[str, Any]:
     module_name, attr_name, target, target_type = _resolve_callable_or_class()
 
     print(
@@ -679,7 +697,7 @@ def _call_tradingagents_package(config: dict[str, Any]) -> dict[str, Any]:
         if target_type == "callable":
             result = _invoke_callable(target, config)
         elif target_type == "class":
-            result = _invoke_graph_class(target, config)
+            result = _invoke_graph_class(target, config, on_update=on_update)
         else:
             raise RuntimeError(f"Unsupported target_type: {target_type}")
 
@@ -698,14 +716,18 @@ def _call_tradingagents_package(config: dict[str, Any]) -> dict[str, Any]:
         ) from exc
 
 
-def run_tradingagents(config: dict[str, Any]) -> dict[str, Any]:
+def run_tradingagents(config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None) -> dict[str, Any]:
     use_mock = os.getenv("TRADINGAGENTS_USE_MOCK", "0").lower() in {"1", "true", "yes"}
     if use_mock:
-        return _build_mock_result(config)
+        result = _build_mock_result(config)
+        if on_update:
+            for name, content in result.get("reports", {}).items():
+                on_update(name, content)
+        return result
 
     try:
         print("[tradingagents_service] run_tradingagents start", flush=True)
-        result = _call_tradingagents_package(config)
+        result = _call_tradingagents_package(config, on_update=on_update)
         print("[tradingagents_service] run_tradingagents finished successfully", flush=True)
         return result
     except Exception as exc:

@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 import traceback
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -29,7 +29,7 @@ from app.tradingagents_service import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).expanduser()
 DB_PATH = DATA_DIR / "app.db"
 
 _DB_LOCK = threading.Lock()
@@ -123,8 +123,10 @@ def _ensure_storage() -> None:
 
 def _get_conn() -> sqlite3.Connection:
     _ensure_storage()
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -151,7 +153,17 @@ def _init_db() -> None:
                     capabilities_json TEXT NOT NULL,
                     progress_json TEXT NOT NULL,
                     timings_json TEXT NOT NULL,
-                    payload_hash TEXT
+                    payload_hash TEXT,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    decision_ready INTEGER NOT NULL DEFAULT 0,
+                    reports_ready_json TEXT NOT NULL DEFAULT '[]',
+                    result_url TEXT,
+                    artifacts_ready_json TEXT NOT NULL DEFAULT '{}',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    last_heartbeat_at TEXT
                 )
                 """
             )
@@ -179,6 +191,16 @@ def _init_db() -> None:
                 "progress_json": "TEXT NOT NULL DEFAULT '{}'",
                 "timings_json": "TEXT NOT NULL DEFAULT '{}'",
                 "payload_hash": "TEXT",
+                "version": "INTEGER NOT NULL DEFAULT 1",
+                "decision_ready": "INTEGER NOT NULL DEFAULT 0",
+                "reports_ready_json": "TEXT NOT NULL DEFAULT '[]'",
+                "result_url": "TEXT",
+                "artifacts_ready_json": "TEXT NOT NULL DEFAULT '{}'",
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "next_attempt_at": "TEXT",
+                "lease_owner": "TEXT",
+                "lease_expires_at": "TEXT",
+                "last_heartbeat_at": "TEXT",
             }
 
             for col_name, col_def in expected_columns.items():
@@ -188,6 +210,8 @@ def _init_db() -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_created_at ON runs(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_payload_hash ON runs(payload_hash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_queue ON runs(status, next_attempt_at, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_lease ON runs(lease_expires_at)")
 
             rows = conn.execute(
                 "SELECT run_id, payload_json, payload_hash FROM runs"
@@ -243,6 +267,16 @@ def _row_to_run(row: sqlite3.Row) -> Dict[str, Any]:
         "capabilities": _json_loads(row["capabilities_json"], {}),
         "progress": _json_loads(row["progress_json"], {}),
         "timings": _json_loads(row["timings_json"], {}),
+        "version": row["version"],
+        "decision_ready": bool(row["decision_ready"]),
+        "reports_ready": _json_loads(row["reports_ready_json"], []),
+        "result_url": row["result_url"],
+        "artifacts_ready": _json_loads(row["artifacts_ready_json"], {}),
+        "attempt_count": row["attempt_count"],
+        "next_attempt_at": row["next_attempt_at"],
+        "lease_owner": row["lease_owner"],
+        "lease_expires_at": row["lease_expires_at"],
+        "last_heartbeat_at": row["last_heartbeat_at"],
     }
 
 
@@ -344,7 +378,17 @@ def _update_run(run_id: str, **updates: Any) -> bool:
                     capabilities_json = ?,
                     progress_json = ?,
                     timings_json = ?,
-                    payload_hash = ?
+                    payload_hash = ?,
+                    version = version + 1,
+                    decision_ready = ?,
+                    reports_ready_json = ?,
+                    result_url = ?,
+                    artifacts_ready_json = ?,
+                    attempt_count = ?,
+                    next_attempt_at = ?,
+                    lease_owner = ?,
+                    lease_expires_at = ?,
+                    last_heartbeat_at = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -363,6 +407,15 @@ def _update_run(run_id: str, **updates: Any) -> bool:
                     _json_dumps(merged["progress"]),
                     _json_dumps(merged["timings"]),
                     _payload_hash(merged["payload"]),
+                    1 if (merged.get("decision_ready") or (merged.get("partial_result") or {}).get("decision_ready")) else 0,
+                    _json_dumps(merged.get("reports_ready") or (merged.get("partial_result") or {}).get("reports_ready") or []),
+                    merged.get("result_url") or (merged.get("partial_result") or {}).get("result_url"),
+                    _json_dumps(merged.get("artifacts_ready") or {}),
+                    int(merged.get("attempt_count") or 0),
+                    merged.get("next_attempt_at"),
+                    merged.get("lease_owner"),
+                    merged.get("lease_expires_at"),
+                    merged.get("last_heartbeat_at"),
                     run_id,
                 ),
             )
@@ -475,62 +528,104 @@ def _add_warning(run_id: str, warning: str) -> None:
 
 
 def reconcile_incomplete_runs() -> None:
-    recoverable_statuses = {
-        "queued",
-        "initializing",
-        "preparing_inputs",
-        "loading_market_data",
-        "building_charts",
-        "importing_engine",
-        "running",
-    }
-
+    """Return interrupted work to the durable queue; expired leases are safe to reclaim."""
+    _init_db()
+    now = _utc_now()
     with _DB_LOCK:
         conn = _get_conn()
         try:
-            rows = conn.execute(
-                "SELECT * FROM runs WHERE completed_at IS NULL"
-            ).fetchall()
-
-            for row in rows:
-                run = _row_to_run(row)
-                if run["status"] in recoverable_statuses:
-                    logs = list(run.get("logs") or [])
-                    logs.append(
-                        {
-                            "ts": _utc_now(),
-                            "level": "warning",
-                            "message": "Run marked failed during startup reconciliation.",
-                        }
-                    )
-
-                    conn.execute(
-                        """
-                        UPDATE runs
-                        SET status = ?,
-                            completed_at = ?,
-                            updated_at = ?,
-                            error_json = ?,
-                            logs_json = ?
-                        WHERE run_id = ?
-                        """,
-                        (
-                            "failed",
-                            _utc_now(),
-                            _utc_now(),
-                            _json_dumps(
-                                {
-                                    "message": "Run was interrupted by a server restart or worker shutdown before completion.",
-                                    "code": "orphaned_run",
-                                }
-                            ),
-                            _json_dumps(_trim_logs(logs)),
-                            run["run_id"],
-                        ),
-                    )
+            conn.execute(
+                """UPDATE runs SET status = 'queued', next_attempt_at = ?, lease_owner = NULL,
+                   lease_expires_at = NULL, updated_at = ?, version = version + 1
+                   WHERE completed_at IS NULL AND status NOT IN ('completed','failed','cancelled')""",
+                (now, now),
+            )
             conn.commit()
         finally:
             conn.close()
+
+
+def get_run_status(run_id: str) -> Optional[Dict[str, Any]]:
+    """Read only polling fields; result, report bodies and logs never leave SQLite."""
+    _init_db()
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            """SELECT run_id,status,created_at,updated_at,started_at,completed_at,error_json,
+                      cancel_requested,poll_after_ms,progress_json,version,decision_ready,
+                      reports_ready_json,result_url,artifacts_ready_json,attempt_count
+               FROM runs WHERE run_id = ?""", (run_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row["run_id"], "status": row["status"], "created_at": row["created_at"],
+            "updated_at": row["updated_at"], "started_at": row["started_at"],
+            "completed_at": row["completed_at"], "progress": _json_loads(row["progress_json"], {}),
+            "error": _json_loads(row["error_json"], None),
+            "cancel_requested": bool(row["cancel_requested"]), "poll_after_ms": row["poll_after_ms"],
+            "version": row["version"], "decision_ready": bool(row["decision_ready"]),
+            "reports_ready": _json_loads(row["reports_ready_json"], []),
+            "result_url": row["result_url"],
+            "artifacts_ready": _json_loads(row["artifacts_ready_json"], {}),
+            "attempt_count": row["attempt_count"],
+        }
+    finally:
+        conn.close()
+
+
+def claim_next_run(worker_id: str, lease_seconds: int = 120) -> Optional[str]:
+    _init_db()
+    now = datetime.now(UTC)
+    now_s = now.isoformat()
+    lease_s = (now + timedelta(seconds=lease_seconds)).isoformat()
+    with _DB_LOCK:
+        conn = _get_conn()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """SELECT run_id FROM runs WHERE completed_at IS NULL AND cancel_requested = 0
+                   AND (status = 'queued' OR lease_expires_at < ?)
+                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                   ORDER BY created_at LIMIT 1""", (now_s, now_s)
+            ).fetchone()
+            if not row:
+                conn.commit(); return None
+            run_id = row["run_id"]
+            conn.execute(
+                """UPDATE runs SET status='initializing', lease_owner=?, lease_expires_at=?,
+                   last_heartbeat_at=?, attempt_count=attempt_count+1, updated_at=?, version=version+1
+                   WHERE run_id=?""", (worker_id, lease_s, now_s, now_s, run_id)
+            )
+            conn.commit(); return run_id
+        finally:
+            conn.close()
+
+
+def release_run_lease(run_id: str, retry: bool = False) -> None:
+    run = get_run(run_id)
+    if not run: return
+    max_attempts = max(1, int(os.getenv("RUN_MAX_ATTEMPTS", "3")))
+    should_retry = retry and int(run.get("attempt_count") or 0) < max_attempts and not run.get("cancel_requested")
+    delay = min(60, 2 ** max(0, int(run.get("attempt_count") or 1)))
+    next_at = (datetime.now(UTC) + timedelta(seconds=delay)).isoformat() if should_retry else None
+    updates = {"lease_owner": None, "lease_expires_at": None, "last_heartbeat_at": _utc_now()}
+    if should_retry:
+        updates.update(status="queued", completed_at=None, next_attempt_at=next_at, poll_after_ms=1500)
+    _update_run(run_id, **updates)
+
+
+def publish_report(run_id: str, name: str, content: Any) -> bool:
+    """Atomically expose one completed report and bump the polling version."""
+    if not name or content is None: return False
+    run = get_run(run_id)
+    if not run: return False
+    partial = dict(run.get("partial_result") or {})
+    reports = dict(partial.get("reports") or {})
+    reports[name] = content
+    ready = list(dict.fromkeys([*(partial.get("reports_ready") or []), name]))
+    partial.update(reports=reports, reports_ready=ready)
+    return _update_run(run_id, partial_result=partial, reports_ready=ready)
 
 
 def engine_available() -> bool:
@@ -710,6 +805,16 @@ def create_or_reuse_run(payload: Dict[str, Any]) -> Dict[str, Any]:
             "step": 0,
             "total_steps": 7,
         },
+        "version": 1,
+        "decision_ready": False,
+        "reports_ready": [],
+        "result_url": None,
+        "artifacts_ready": {},
+        "attempt_count": 0,
+        "next_attempt_at": now,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "last_heartbeat_at": None,
         "timings": {
             "started_at": None,
             "last_update_at": now,
@@ -719,9 +824,6 @@ def create_or_reuse_run(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
     _insert_run(run, payload_hash)
-
-    worker = threading.Thread(target=_run_in_background, args=(run_id,), daemon=True)
-    worker.start()
 
     return {"run_id": run_id, "reused": False}
 
@@ -1080,8 +1182,13 @@ def _build_summary_cards(ticker: str, analysis_date: str, df: pd.DataFrame) -> D
     }
 
 
+def _public_url(path: str) -> str:
+    base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    return f"{base}{path}" if base else path
+
+
 def _artifact_urls(run_id: str) -> Dict[str, str]:
-    return {
+    paths = {
         "market_data": f"/runs/{run_id}/market-data",
         "market_data_json": f"/runs/{run_id}/market-data.json",
         "price_chart_json": f"/runs/{run_id}/price-chart.json",
@@ -1091,6 +1198,7 @@ def _artifact_urls(run_id: str) -> Dict[str, str]:
         "chart_html": f"/runs/{run_id}/chart.html",
         "result_html": f"/runs/{run_id}/result.html",
     }
+    return {key: _public_url(path) for key, path in paths.items()}
 
 
 def _run_in_background(run_id: str) -> None:
@@ -1363,7 +1471,10 @@ def _run_in_background(run_id: str) -> None:
         _append_log(run_id, "Calling TradingAgents engine adapter.")
         _increment_counter(run_id, "engine_calls_count", 1)
 
-        engine_result = run_tradingagents(engine_config)
+        def on_engine_update(name: str, content: Any) -> None:
+            publish_report(run_id, name, content)
+
+        engine_result = run_tradingagents(engine_config, on_update=on_engine_update)
 
         propagate_ms = _duration_ms(propagate_start)
         _record_timing(run_id, "propagate_ms", propagate_ms)
@@ -1399,7 +1510,13 @@ def _run_in_background(run_id: str) -> None:
         _record_timing(run_id, "build_result_ms", build_result_ms)
         _append_log(run_id, f"Result payload built in {build_result_ms} ms.")
 
+        for report_name, report_content in (result.get("reports") or {}).items():
+            publish_report(run_id, str(report_name), report_content)
+
         urls = _artifact_urls(run_id)
+        # Final HTML must exist before result_url and completed are published.
+        _update_run(run_id, result=result, decision_ready=True)
+        write_all_core_artifacts(run_id)
 
         _update_run(
             run_id,
@@ -1426,11 +1543,14 @@ def _run_in_background(run_id: str) -> None:
                 "total_steps": 7,
             },
             poll_after_ms=0,
+            decision_ready=True,
+            reports_ready=list((result.get("reports") or {}).keys()),
+            result_url=urls["result_html"],
+            artifacts_ready={"result_html": True, "price_chart_json": True, "market_data": True},
         )
 
         artifact_start = _now_perf()
         try:
-            write_all_core_artifacts(run_id)
             artifact_ms = _duration_ms(artifact_start)
             _record_timing(run_id, "artifact_save_ms", artifact_ms)
             _append_log(run_id, f"All core artifacts saved in {artifact_ms} ms.")
