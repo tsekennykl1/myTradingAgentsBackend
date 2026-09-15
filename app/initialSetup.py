@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import json
+import os
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 ENV_FILE = PROJECT_ROOT / ".env"
 ENV_EXAMPLE_FILE = PROJECT_ROOT / ".env.example"
 SAMPLE_PAYLOAD_FILE = PROJECT_ROOT / "sample_run_payload.json"
+
+# Shared starter keys. They work out of the box but are rate limited,
+# so replace them with your own keys for anything beyond a first test.
+DEFAULT_FRED_API_KEY = "a18ce0f4ff2108251c4a0467c60338e1"
+DEFAULT_ALPHA_VANTAGE_API_KEY = "DGJFSPTFUJ6ZRKA1"
 
 
 PROVIDER_MODELS = {
@@ -608,7 +617,7 @@ def validate_all_before_save(env: dict[str, str]) -> list[str]:
     return errors
 
 
-def main() -> int:
+def run_interactive() -> int:
     print("=" * 72)
     print("TradingAgents Backend Initial Setup")
     print("=" * 72)
@@ -710,29 +719,35 @@ def main() -> int:
         print()
 
     if prompt_yes_no("Do you want to configure Alpha Vantage now?", default=True):
+        existing_av = env.get("ALPHA_VANTAGE_API_KEY", "") or DEFAULT_ALPHA_VANTAGE_API_KEY
+        print(f"Current ALPHA_VANTAGE_API_KEY: {mask_secret(existing_av)}")
+        print("    Free key: https://www.alphavantage.co/support/#api-key")
+        print("    Press Enter to keep the shared starter key (rate limited).")
         env["ALPHA_VANTAGE_API_KEY"] = prompt(
             "Enter ALPHA_VANTAGE_API_KEY",
-            default=env.get("ALPHA_VANTAGE_API_KEY", ""),
+            default=existing_av,
             required=True,
         )
         print()
     else:
-        env.setdefault("ALPHA_VANTAGE_API_KEY", "")
+        env.setdefault("ALPHA_VANTAGE_API_KEY", DEFAULT_ALPHA_VANTAGE_API_KEY)
 
     configure_fred = prompt_yes_no(
         "Do you want to configure FRED now? Recommended for macroeconomic data and fewer fallback delays.",
         default=True,
     )
     if configure_fred:
-        existing_fred = env.get("FRED_API_KEY", "")
+        existing_fred = env.get("FRED_API_KEY", "") or DEFAULT_FRED_API_KEY
         print(f"Current FRED_API_KEY: {mask_secret(existing_fred)}")
+        print("    Free key: https://fredaccount.stlouisfed.org/apikeys")
+        print("    Press Enter to keep the shared starter key (rate limited).")
         env["FRED_API_KEY"] = prompt(
             "Enter FRED_API_KEY",
             default=existing_fred,
             required=True,
         )
     else:
-        env.setdefault("FRED_API_KEY", env.get("FRED_API_KEY", ""))
+        env.setdefault("FRED_API_KEY", env.get("FRED_API_KEY", "") or DEFAULT_FRED_API_KEY)
     print()
 
     default_deep, default_quick = provider_default_models(provider)
@@ -868,6 +883,229 @@ def main() -> int:
     print()
 
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive mode
+# ---------------------------------------------------------------------------
+
+CONFIG_ALIASES = {
+    "llm_provider": "TRADINGAGENTS_LLM_PROVIDER",
+    "provider": "TRADINGAGENTS_LLM_PROVIDER",
+    "deep_think_llm": "TRADINGAGENTS_DEEP_THINK_LLM",
+    "deep_model": "TRADINGAGENTS_DEEP_THINK_LLM",
+    "quick_think_llm": "TRADINGAGENTS_QUICK_THINK_LLM",
+    "quick_model": "TRADINGAGENTS_QUICK_THINK_LLM",
+    "max_debate_rounds": "TRADINGAGENTS_MAX_DEBATE_ROUNDS",
+    "research_depth": "TRADINGAGENTS_MAX_DEBATE_ROUNDS",
+    "temperature": "TRADINGAGENTS_TEMPERATURE",
+    "checkpoint_enabled": "TRADINGAGENTS_CHECKPOINT_ENABLED",
+    "cache_dir": "TRADINGAGENTS_CACHE_DIR",
+    "memory_log_path": "TRADINGAGENTS_MEMORY_LOG_PATH",
+    "fred_api_key": "FRED_API_KEY",
+    "alpha_vantage_api_key": "ALPHA_VANTAGE_API_KEY",
+    "public_base_url": "PUBLIC_BASE_URL",
+    "frontend_origins": "FRONTEND_ORIGINS",
+}
+
+
+def load_config_text(source: str) -> str:
+    """Load raw JSON text from inline JSON, a local path, or an http(s)/s3 URL."""
+    stripped = source.strip()
+
+    if stripped.startswith("{"):
+        return stripped
+
+    if stripped.startswith(("http://", "https://")):
+        with urllib.request.urlopen(stripped, timeout=30) as response:  # noqa: S310
+            return response.read().decode("utf-8")
+
+    if stripped.startswith("s3://"):
+        import subprocess
+
+        result = subprocess.run(
+            ["aws", "s3", "cp", stripped, "-"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to read {stripped}: {result.stderr.strip()}")
+        return result.stdout
+
+    path = Path(stripped).expanduser()
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def load_config(source: str) -> dict:
+    data = json.loads(load_config_text(source))
+    if not isinstance(data, dict):
+        raise ValueError("Config JSON must be an object at the top level.")
+    return data
+
+
+def config_to_env(config: dict, existing: dict[str, str]) -> dict[str, str]:
+    """Merge config values (aliases or raw env names) over the existing .env values."""
+    env: dict[str, str] = dict(existing)
+
+    # Nested "env" block: raw environment variable names, highest precedence.
+    nested_env = config.get("env") if isinstance(config.get("env"), dict) else {}
+
+    for key, value in config.items():
+        if key == "env" or value is None:
+            continue
+        target = CONFIG_ALIASES.get(key, key)
+        if isinstance(value, bool):
+            env[target] = "true" if value else "false"
+        elif isinstance(value, (list, tuple)):
+            env[target] = ",".join(str(item) for item in value)
+        else:
+            env[target] = str(value)
+
+    for key, value in nested_env.items():
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            env[key] = "true" if value else "false"
+        elif isinstance(value, (list, tuple)):
+            env[key] = ",".join(str(item) for item in value)
+        else:
+            env[key] = str(value)
+
+    provider = env.get("TRADINGAGENTS_LLM_PROVIDER", "").strip()
+    if provider:
+        default_deep, default_quick = provider_default_models(provider)
+        env["TRADINGAGENTS_DEEP_THINK_LLM"] = sanitize_default_model(
+            provider, "deep", env.get("TRADINGAGENTS_DEEP_THINK_LLM", ""), default_deep
+        )
+        env["TRADINGAGENTS_QUICK_THINK_LLM"] = sanitize_default_model(
+            provider, "quick", env.get("TRADINGAGENTS_QUICK_THINK_LLM", ""), default_quick
+        )
+
+    env.setdefault("TRADINGAGENTS_MAX_DEBATE_ROUNDS", "1")
+    env.setdefault("TRADINGAGENTS_TEMPERATURE", "0.0")
+    env.setdefault("TRADINGAGENTS_CHECKPOINT_ENABLED", "true")
+    env.setdefault("TRADINGAGENTS_CACHE_DIR", str(PROJECT_ROOT / "data" / "tradingagents_cache"))
+    env.setdefault("TRADINGAGENTS_MEMORY_LOG_PATH", str(PROJECT_ROOT / "data" / "trading_memory.md"))
+    env.setdefault("FRED_API_KEY", DEFAULT_FRED_API_KEY)
+    env.setdefault("ALPHA_VANTAGE_API_KEY", DEFAULT_ALPHA_VANTAGE_API_KEY)
+
+    if not env.get("FRED_API_KEY", "").strip():
+        env["FRED_API_KEY"] = DEFAULT_FRED_API_KEY
+    if not env.get("ALPHA_VANTAGE_API_KEY", "").strip():
+        env["ALPHA_VANTAGE_API_KEY"] = DEFAULT_ALPHA_VANTAGE_API_KEY
+
+    return env
+
+
+def run_non_interactive(source: str, write_example: bool = True, write_sample: bool = True) -> int:
+    print("=" * 72)
+    print("TradingAgents Backend Initial Setup (non-interactive)")
+    print("=" * 72)
+    print(f"Config source: {source}")
+    print()
+
+    try:
+        config = load_config(source)
+    except Exception as exc:  # noqa: BLE001
+        print(f"❌ Could not read config: {exc}")
+        return 1
+
+    env = config_to_env(config, read_existing_env(ENV_FILE))
+
+    errors = validate_all_before_save(env)
+    if errors:
+        print("❌ Validation failed. Nothing was written.")
+        for err in errors:
+            print(f"- {err}")
+        return 1
+
+    write_env(ENV_FILE, env)
+    print(f"✅ Wrote: {ENV_FILE}")
+
+    if write_example:
+        write_env_example(ENV_EXAMPLE_FILE, env)
+        print(f"✅ Wrote: {ENV_EXAMPLE_FILE}")
+
+    if write_sample:
+        write_sample_payload(
+            SAMPLE_PAYLOAD_FILE,
+            provider=env["TRADINGAGENTS_LLM_PROVIDER"],
+            deep_model=env["TRADINGAGENTS_DEEP_THINK_LLM"],
+            quick_model=env["TRADINGAGENTS_QUICK_THINK_LLM"],
+            ticker=str(config.get("sample_ticker", "NVDA")).upper(),
+            end_date=str(config.get("sample_end_date", datetime.now().strftime("%Y-%m-%d"))),
+            max_debate_rounds=int(env["TRADINGAGENTS_MAX_DEBATE_ROUNDS"]),
+            temperature=float(env["TRADINGAGENTS_TEMPERATURE"]),
+            checkpoint_enabled=env["TRADINGAGENTS_CHECKPOINT_ENABLED"].strip().lower() == "true",
+        )
+        print(f"✅ Wrote: {SAMPLE_PAYLOAD_FILE}")
+
+    print()
+    print("Configured values:")
+    print(f"  Provider:          {env['TRADINGAGENTS_LLM_PROVIDER']}")
+    print(f"  Deep-think model:  {env['TRADINGAGENTS_DEEP_THINK_LLM']}")
+    print(f"  Quick-think model: {env['TRADINGAGENTS_QUICK_THINK_LLM']}")
+    print(f"  FRED key:          {mask_secret(env.get('FRED_API_KEY', ''))}")
+    print(f"  Alpha Vantage key: {mask_secret(env.get('ALPHA_VANTAGE_API_KEY', ''))}")
+    print()
+    print("Setup complete.")
+    return 0
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Create the backend .env file. Runs interactively by default, or "
+            "unattended with --non-interactive plus a JSON config."
+        )
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Do not ask questions; take every value from the JSON config.",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        metavar="SOURCE",
+        help=(
+            "JSON config: a file path, an http(s) URL, an s3:// URL, or inline JSON. "
+            "Defaults to the CONFIG_JSON environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--no-env-example",
+        action="store_true",
+        help="Do not write .env.example (non-interactive mode only).",
+    )
+    parser.add_argument(
+        "--no-sample-payload",
+        action="store_true",
+        help="Do not write sample_run_payload.json (non-interactive mode only).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    config_source = args.config or os.environ.get("CONFIG_JSON", "").strip()
+
+    if args.non_interactive or (config_source and not os.isatty(0)):
+        if not config_source:
+            print("❌ --non-interactive requires --config or the CONFIG_JSON environment variable.")
+            return 1
+        return run_non_interactive(
+            config_source,
+            write_example=not args.no_env_example,
+            write_sample=not args.no_sample_payload,
+        )
+
+    return run_interactive()
 
 
 if __name__ == "__main__":
