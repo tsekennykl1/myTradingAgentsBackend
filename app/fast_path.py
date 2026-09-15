@@ -143,6 +143,7 @@ def _build_tail_graph(
     graph: Any,
     import_module: Callable[[str], Any],
     enabled: Optional[set[str]] = None,
+    on_stage: Optional[Callable[[str, str], None]] = None,
 ):
     """Everything from the Bull Researcher onward; skipped stages become no-ops.
 
@@ -163,22 +164,88 @@ def _build_tail_graph(
     def on(stage: str) -> bool:
         return enabled is None or stage in enabled
 
+    def emit(stage: str, event: str) -> None:
+        if on_stage:
+            on_stage(stage, event)
+
+    def timed(stage: str, node: Callable[[Any], dict[str, Any]], previous: Optional[str] = None):
+        def wrapped(state: Any) -> dict[str, Any]:
+            if previous:
+                emit(previous, "completed")
+            emit(stage, "started")
+            try:
+                result = node(state)
+            except Exception:
+                emit(stage, "error")
+                raise
+            emit(stage, "completed")
+            return result
+        return wrapped
+
+    def begin(stage: str, node: Callable[[Any], dict[str, Any]]):
+        def wrapped(state: Any) -> dict[str, Any]:
+            emit(stage, "started")
+            try:
+                return node(state)
+            except Exception:
+                emit(stage, "error")
+                raise
+        return wrapped
+
+    def risk_rounds(state: Any) -> dict[str, Any]:
+        """Run each risk round from one snapshot, then merge in stable order."""
+        emit("risk_debate", "started")
+        current = dict(state)
+        rounds = max(1, int(getattr(graph.conditional_logic, "max_risk_discuss_rounds", 1)))
+        factories = (
+            ("aggressive", agents.create_aggressive_debator),
+            ("conservative", agents.create_conservative_debator),
+            ("neutral", agents.create_neutral_debator),
+        )
+        nodes = [(name, factory(quick)) for name, factory in factories]
+        try:
+            for _round in range(rounds):
+                snapshot = dict(current)
+                snapshot["risk_debate_state"] = dict(current.get("risk_debate_state") or {})
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    outputs = list(pool.map(lambda item: (item[0], item[1](snapshot)), nodes))
+                prior = dict(current.get("risk_debate_state") or {})
+                arguments: list[str] = []
+                for name, output in outputs:
+                    risk = dict((output or {}).get("risk_debate_state") or {})
+                    history_key = f"{name}_history"
+                    response_key = f"current_{name}_response"
+                    argument = str(risk.get(response_key) or "")
+                    if argument:
+                        arguments.append(argument)
+                        prior[history_key] = str(prior.get(history_key) or "") + "\n" + argument
+                        prior[response_key] = argument
+                prior["history"] = str(prior.get("history") or "") + "\n" + "\n".join(arguments)
+                prior["latest_speaker"] = "Neutral"
+                prior["count"] = int(prior.get("count") or 0) + 3
+                current["risk_debate_state"] = prior
+        except Exception:
+            emit("risk_debate", "error")
+            raise
+        emit("risk_debate", "completed")
+        return {"risk_debate_state": current["risk_debate_state"]}
+
     workflow = langgraph.StateGraph(states.AgentState)
     if on("research_debate"):
-        workflow.add_node("Bull Researcher", agents.create_bull_researcher(quick))
+        workflow.add_node("Bull Researcher", begin("research_debate", agents.create_bull_researcher(quick)))
         workflow.add_node("Bear Researcher", agents.create_bear_researcher(quick))
     workflow.add_node(
         "Research Manager",
-        agents.create_research_manager(deep) if on("research_manager") else _passthrough,
+        timed("research_manager", agents.create_research_manager(deep), "research_debate" if on("research_debate") else None)
+        if on("research_manager")
+        else (timed("research_debate", _passthrough) if on("research_debate") else _passthrough),
     )
-    workflow.add_node("Trader", agents.create_trader(quick) if on("trader") else _passthrough)
+    workflow.add_node("Trader", timed("trader", agents.create_trader(quick)) if on("trader") else _passthrough)
     if on("risk_debate"):
-        workflow.add_node("Aggressive Analyst", agents.create_aggressive_debator(quick))
-        workflow.add_node("Conservative Analyst", agents.create_conservative_debator(quick))
-        workflow.add_node("Neutral Analyst", agents.create_neutral_debator(quick))
+        workflow.add_node("Risk Analysts", risk_rounds)
     workflow.add_node(
         "Portfolio Manager",
-        agents.create_portfolio_manager(deep) if on("portfolio_manager") else _passthrough,
+        timed("portfolio_manager", agents.create_portfolio_manager(deep)) if on("portfolio_manager") else _passthrough,
     )
 
     if on("research_debate"):
@@ -195,13 +262,8 @@ def _build_tail_graph(
     workflow.add_edge("Research Manager", "Trader")
 
     if on("risk_debate"):
-        workflow.add_edge("Trader", "Aggressive Analyst")
-        for risk_node in ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"):
-            workflow.add_conditional_edges(
-                risk_node,
-                graph.conditional_logic.should_continue_risk_analysis,
-                setup.RISK_ANALYSIS_PATH_MAP,
-            )
+        workflow.add_edge("Trader", "Risk Analysts")
+        workflow.add_edge("Risk Analysts", "Portfolio Manager")
     else:
         workflow.add_edge("Trader", "Portfolio Manager")
 
@@ -219,6 +281,7 @@ def run_analysts_in_parallel(
     extract_reports: Callable[[Any], dict[str, str]],
     on_update: Optional[Callable[[str, Any], None]] = None,
     stages: Any = None,
+    on_stage: Optional[Callable[[str, str], None]] = None,
 ) -> tuple[dict[str, Any], Any]:
     """Run the selected analysts concurrently, then the rest of the pipeline.
 
@@ -261,7 +324,16 @@ def run_analysts_in_parallel(
 
     def run_branch(spec):
         started = time.monotonic()
-        state = branches[spec.key].invoke(dict(base_state), config=invoke_config)
+        if on_stage:
+            on_stage(spec.key, "started")
+        try:
+            state = branches[spec.key].invoke(dict(base_state), config=invoke_config)
+        except Exception:
+            if on_stage:
+                on_stage(spec.key, "error")
+            raise
+        if on_stage:
+            on_stage(spec.key, "completed")
         duration = time.monotonic() - started
         print(f"[fast_path] {spec.agent_node} finished in {duration:.1f}s", flush=True)
         return spec, state
@@ -293,7 +365,7 @@ def run_analysts_in_parallel(
         skipped = [stage for stage in TAIL_STAGES if stage not in enabled]
         if skipped:
             print(f"[fast_path] skipping stages: {', '.join(skipped)}", flush=True)
-    tail = _build_tail_graph(graph, import_module, enabled)
+    tail = _build_tail_graph(graph, import_module, enabled, on_stage)
     final_state: dict[str, Any] = dict(merged)
     for chunk in tail.stream(merged, **graph_args):
         if not isinstance(chunk, dict):

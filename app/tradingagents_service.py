@@ -569,7 +569,7 @@ def _detect_asset_type(ticker: str) -> str:
     return "stock"
 
 
-def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None) -> dict[str, Any]:
+def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None, on_stage: Optional[Callable[[str, str], None]] = None) -> dict[str, Any]:
     ta_config = _build_tradingagents_config(config)
     selected_analysts = _map_analysts_to_selected(config.get("analysts"))
 
@@ -651,6 +651,7 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
                 _extract_reports_from_state,
                 on_update,
                 config.get("stages"),
+                on_stage,
             )
             normalized = _normalize_propagate_result(final_state, decision, selected_analysts)
             normalized.setdefault("_engine_adapter", {})
@@ -729,7 +730,7 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
     return coerced
 
 
-def _call_tradingagents_package(config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None) -> dict[str, Any]:
+def _call_tradingagents_package(config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None, on_stage: Optional[Callable[[str, str], None]] = None) -> dict[str, Any]:
     module_name, attr_name, target, target_type = _resolve_callable_or_class()
 
     print(
@@ -745,7 +746,7 @@ def _call_tradingagents_package(config: dict[str, Any], on_update: Optional[Call
         if target_type == "callable":
             result = _invoke_callable(target, config)
         elif target_type == "class":
-            result = _invoke_graph_class(target, config, on_update=on_update)
+            result = _invoke_graph_class(target, config, on_update=on_update, on_stage=on_stage)
         else:
             raise RuntimeError(f"Unsupported target_type: {target_type}")
 
@@ -764,7 +765,7 @@ def _call_tradingagents_package(config: dict[str, Any], on_update: Optional[Call
         ) from exc
 
 
-def run_tradingagents(config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None) -> dict[str, Any]:
+def run_tradingagents(config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None, on_stage: Optional[Callable[[str, str], None]] = None) -> dict[str, Any]:
     use_mock = os.getenv("TRADINGAGENTS_USE_MOCK", "0").lower() in {"1", "true", "yes"}
     if use_mock:
         result = _build_mock_result(config)
@@ -775,7 +776,7 @@ def run_tradingagents(config: dict[str, Any], on_update: Optional[Callable[[str,
 
     try:
         print("[tradingagents_service] run_tradingagents start", flush=True)
-        result = _call_tradingagents_package(config, on_update=on_update)
+        result = _call_tradingagents_package(config, on_update=on_update, on_stage=on_stage)
         print("[tradingagents_service] run_tradingagents finished successfully", flush=True)
         return result
     except Exception as exc:

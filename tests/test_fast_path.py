@@ -261,3 +261,45 @@ def test_analyst_only_stage_list_skips_the_tail():
     assert fast_path.normalize_stages(["market", "news"]) == set()
     assert fast_path.normalize_stages([]) == set()
     assert fast_path.normalize_stages(["Trader"]) == {"trader"}
+
+
+def test_risk_viewpoints_run_concurrently_and_stage_events_are_emitted():
+    events: list[tuple[str, str]] = []
+    modules = _modules()
+
+    def risk_node(name):
+        def node(state):
+            time.sleep(0.2)
+            prior = state["risk_debate_state"]
+            argument = f"{name.title()} Analyst: view"
+            return {"risk_debate_state": {
+                **prior,
+                f"current_{name}_response": argument,
+                f"{name}_history": argument,
+                "history": argument,
+                "latest_speaker": name.title(),
+                "count": int(prior.get("count", 0)) + 1,
+            }}
+        return node
+
+    agents = modules["tradingagents.agents"]
+    agents.create_aggressive_debator = lambda llm: risk_node("aggressive")
+    agents.create_conservative_debator = lambda llm: risk_node("conservative")
+    agents.create_neutral_debator = lambda llm: risk_node("neutral")
+    started = time.monotonic()
+    final_state, decision = fast_path.run_analysts_in_parallel(
+        FakeGraph(), "AAPL", "2026-09-15", "stock", ("market",),
+        lambda name: modules[name], _extract_reports, None,
+        ["market", "trader", "risk_debate", "portfolio_manager"],
+        lambda stage, event: events.append((stage, event)),
+    )
+    elapsed = time.monotonic() - started
+    risk = final_state["risk_debate_state"]
+    assert decision == "BUY"
+    assert risk["count"] == 3
+    assert "Aggressive Analyst" in risk["history"]
+    assert "Conservative Analyst" in risk["history"]
+    assert "Neutral Analyst" in risk["history"]
+    assert ("risk_debate", "started") in events
+    assert ("risk_debate", "completed") in events
+    assert elapsed < 0.55, f"risk viewpoints did not overlap (took {elapsed:.2f}s)"

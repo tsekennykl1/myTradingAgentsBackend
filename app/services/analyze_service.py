@@ -33,6 +33,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).expanduser()
 DB_PATH = DATA_DIR / "app.db"
 
 _DB_LOCK = threading.Lock()
+_STAGE_TIMING_LOCK = threading.Lock()
 
 
 MODEL_ALIASES = {
@@ -491,6 +492,34 @@ def _record_timing(run_id: str, name: str, duration_ms: int) -> bool:
     return _update_run(run_id, timings=timings)
 
 
+def _record_stage_event(run_id: str, stage: str, event: str) -> bool:
+    """Persist one stage's live wall-clock bounds without losing parallel updates."""
+    if event not in {"started", "completed", "error"}:
+        return False
+    with _STAGE_TIMING_LOCK:
+        run = get_run(run_id)
+        if not run:
+            return False
+        now = _utc_now()
+        timings = dict(run.get("timings") or {})
+        stages = dict(timings.get("stages") or {})
+        item = dict(stages.get(stage) or {})
+        if event == "started":
+            item.update(status="in_progress", started_at=item.get("started_at") or now)
+            item["attempts"] = int(item.get("attempts") or 0) + 1
+        else:
+            item.update(status="completed" if event == "completed" else "error", ended_at=now)
+            started_at = item.get("started_at")
+            if started_at:
+                try:
+                    item["duration_ms"] = max(0, int((datetime.fromisoformat(now) - datetime.fromisoformat(started_at)).total_seconds() * 1000))
+                except Exception:
+                    pass
+        stages[stage] = item
+        timings.update(stages=stages, last_update_at=now)
+        return _update_run(run_id, timings=timings)
+
+
 def _increment_counter(run_id: str, name: str, amount: int = 1) -> bool:
     run = get_run(run_id)
     if not run:
@@ -553,7 +582,7 @@ def get_run_status(run_id: str) -> Optional[Dict[str, Any]]:
         row = conn.execute(
             """SELECT run_id,status,created_at,updated_at,started_at,completed_at,error_json,
                       cancel_requested,poll_after_ms,progress_json,version,decision_ready,
-                      reports_ready_json,result_url,artifacts_ready_json,attempt_count
+                       reports_ready_json,result_url,artifacts_ready_json,attempt_count,timings_json
                FROM runs WHERE run_id = ?""", (run_id,)
         ).fetchone()
         if not row:
@@ -569,6 +598,7 @@ def get_run_status(run_id: str) -> Optional[Dict[str, Any]]:
             "result_url": row["result_url"],
             "artifacts_ready": _json_loads(row["artifacts_ready_json"], {}),
             "attempt_count": row["attempt_count"],
+            "timings": _json_loads(row["timings_json"], {}),
         }
     finally:
         conn.close()
@@ -1474,7 +1504,10 @@ def _run_in_background(run_id: str) -> None:
         def on_engine_update(name: str, content: Any) -> None:
             publish_report(run_id, name, content)
 
-        engine_result = run_tradingagents(engine_config, on_update=on_engine_update)
+        def on_stage_update(name: str, event: str) -> None:
+            _record_stage_event(run_id, name, event)
+
+        engine_result = run_tradingagents(engine_config, on_update=on_engine_update, on_stage=on_stage_update)
 
         propagate_ms = _duration_ms(propagate_start)
         _record_timing(run_id, "propagate_ms", propagate_ms)
