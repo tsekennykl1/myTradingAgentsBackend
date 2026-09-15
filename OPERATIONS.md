@@ -22,3 +22,25 @@ round, Deep uses three; risk discussion is one round below Deep and two on Deep.
 If the installed TradingAgents package drifts structurally, the parallel path
 logs the failure and falls back to the sequential graph automatically — runs
 never fail because of this optimization.
+
+### Stage opt-in / opt-out
+
+The frontend's New Analysis form sends the stages the user ticked. The run
+payload may carry `stages` (or `selected_stages`), e.g.
+
+```json
+{"stages": ["market", "research_debate", "research_manager", "trader", "risk_debate", "portfolio_manager"]}
+```
+
+Recognised tail stages: `research_debate` (Bull + Bear Researcher),
+`research_manager`, `trader`, `risk_debate` (Aggressive + Conservative +
+Neutral Analyst), `portfolio_manager`. Analyst stages (`market`, `social`,
+`news`, `fundamentals`) continue to be controlled by `analysts` /
+`selected_analysts`.
+
+Stages left out of the list are skipped entirely — no LLM calls, so run time
+drops roughly in proportion to what was dropped. Omitting `stages`, sending an
+empty list, or sending only analyst stages keeps the full pipeline, so older
+clients behave exactly as before. Skipping only applies to the parallel fast
+path (`TRADINGAGENTS_PARALLEL_ANALYSTS=1`, the default); the sequential
+fallback always runs the full graph.
