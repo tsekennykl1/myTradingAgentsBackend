@@ -120,8 +120,43 @@ def _build_analyst_branch(graph: Any, spec: Any, agent_node: Any, import_module:
     return workflow.compile()
 
 
-def _build_tail_graph(graph: Any, import_module: Callable[[str], Any]):
-    """Everything from the Bull Researcher onward, unchanged in shape."""
+#: Stages of the tail pipeline the caller may opt out of.
+TAIL_STAGES = ("research_debate", "research_manager", "trader", "risk_debate", "portfolio_manager")
+
+
+def normalize_stages(stages: Any) -> Optional[set[str]]:
+    """Return the enabled tail stages, or ``None`` when the caller opted out of nothing."""
+
+    if not stages:
+        return None
+    wanted = {str(item).strip().lower() for item in stages if str(item).strip()}
+    if not wanted:
+        return None
+    enabled = {stage for stage in TAIL_STAGES if stage in wanted}
+    # A request that names only analyst stages must not silently drop the whole tail.
+    if not enabled:
+        return None
+    return enabled
+
+
+def _passthrough(_state: Any) -> dict[str, Any]:
+    """A skipped stage contributes nothing and makes no LLM call."""
+
+    return {}
+
+
+def _build_tail_graph(
+    graph: Any,
+    import_module: Callable[[str], Any],
+    enabled: Optional[set[str]] = None,
+):
+    """Everything from the Bull Researcher onward; skipped stages become no-ops.
+
+    Nodes that the vendor's conditional path maps point at ("Research Manager",
+    "Portfolio Manager") always exist, so a skipped stage is a passthrough node
+    rather than a missing edge target. Skipped *debates* are routed around
+    entirely, because their loop counters would otherwise never advance.
+    """
 
     langgraph = import_module("langgraph.graph")
     states = import_module("tradingagents.agents.utils.agent_states")
@@ -131,31 +166,51 @@ def _build_tail_graph(graph: Any, import_module: Callable[[str], Any]):
     quick = graph.quick_thinking_llm
     deep = graph.deep_thinking_llm
 
-    workflow = langgraph.StateGraph(states.AgentState)
-    workflow.add_node("Bull Researcher", agents.create_bull_researcher(quick))
-    workflow.add_node("Bear Researcher", agents.create_bear_researcher(quick))
-    workflow.add_node("Research Manager", agents.create_research_manager(deep))
-    workflow.add_node("Trader", agents.create_trader(quick))
-    workflow.add_node("Aggressive Analyst", agents.create_aggressive_debator(quick))
-    workflow.add_node("Conservative Analyst", agents.create_conservative_debator(quick))
-    workflow.add_node("Neutral Analyst", agents.create_neutral_debator(quick))
-    workflow.add_node("Portfolio Manager", agents.create_portfolio_manager(deep))
+    def on(stage: str) -> bool:
+        return enabled is None or stage in enabled
 
-    workflow.add_edge(langgraph.START, "Bull Researcher")
-    for debate_node in ("Bull Researcher", "Bear Researcher"):
-        workflow.add_conditional_edges(
-            debate_node,
-            graph.conditional_logic.should_continue_debate,
-            setup.DEBATE_PATH_MAP,
-        )
+    workflow = langgraph.StateGraph(states.AgentState)
+    if on("research_debate"):
+        workflow.add_node("Bull Researcher", agents.create_bull_researcher(quick))
+        workflow.add_node("Bear Researcher", agents.create_bear_researcher(quick))
+    workflow.add_node(
+        "Research Manager",
+        agents.create_research_manager(deep) if on("research_manager") else _passthrough,
+    )
+    workflow.add_node("Trader", agents.create_trader(quick) if on("trader") else _passthrough)
+    if on("risk_debate"):
+        workflow.add_node("Aggressive Analyst", agents.create_aggressive_debator(quick))
+        workflow.add_node("Conservative Analyst", agents.create_conservative_debator(quick))
+        workflow.add_node("Neutral Analyst", agents.create_neutral_debator(quick))
+    workflow.add_node(
+        "Portfolio Manager",
+        agents.create_portfolio_manager(deep) if on("portfolio_manager") else _passthrough,
+    )
+
+    if on("research_debate"):
+        workflow.add_edge(langgraph.START, "Bull Researcher")
+        for debate_node in ("Bull Researcher", "Bear Researcher"):
+            workflow.add_conditional_edges(
+                debate_node,
+                graph.conditional_logic.should_continue_debate,
+                setup.DEBATE_PATH_MAP,
+            )
+    else:
+        workflow.add_edge(langgraph.START, "Research Manager")
+
     workflow.add_edge("Research Manager", "Trader")
-    workflow.add_edge("Trader", "Aggressive Analyst")
-    for risk_node in ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"):
-        workflow.add_conditional_edges(
-            risk_node,
-            graph.conditional_logic.should_continue_risk_analysis,
-            setup.RISK_ANALYSIS_PATH_MAP,
-        )
+
+    if on("risk_debate"):
+        workflow.add_edge("Trader", "Aggressive Analyst")
+        for risk_node in ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"):
+            workflow.add_conditional_edges(
+                risk_node,
+                graph.conditional_logic.should_continue_risk_analysis,
+                setup.RISK_ANALYSIS_PATH_MAP,
+            )
+    else:
+        workflow.add_edge("Trader", "Portfolio Manager")
+
     workflow.add_edge("Portfolio Manager", langgraph.END)
     return workflow.compile()
 
@@ -169,6 +224,7 @@ def run_analysts_in_parallel(
     import_module: Callable[[str], Any],
     extract_reports: Callable[[Any], dict[str, str]],
     on_update: Optional[Callable[[str, Any], None]] = None,
+    stages: Any = None,
 ) -> tuple[dict[str, Any], Any]:
     """Run the selected analysts concurrently, then the rest of the pipeline.
 
@@ -238,7 +294,12 @@ def run_analysts_in_parallel(
     # Downstream agents read the report fields, not the analyst chatter.
     merged["messages"] = [("human", ticker)]
 
-    tail = _build_tail_graph(graph, import_module)
+    enabled = normalize_stages(stages)
+    if enabled is not None:
+        skipped = [stage for stage in TAIL_STAGES if stage not in enabled]
+        if skipped:
+            print(f"[fast_path] skipping stages: {', '.join(skipped)}", flush=True)
+    tail = _build_tail_graph(graph, import_module, enabled)
     final_state: dict[str, Any] = dict(merged)
     for chunk in tail.stream(merged, **graph_args):
         if not isinstance(chunk, dict):
