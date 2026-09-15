@@ -8,6 +8,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from app import fast_path
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOCAL_TRADINGAGENTS_REPO_DIR = BASE_DIR / "TradingAgents"
@@ -449,6 +451,10 @@ def _build_tradingagents_config(config: dict[str, Any]) -> dict[str, Any]:
         default_config["deep_think_llm"] = str(deep_model).strip()
 
     default_config["max_debate_rounds"] = _coerce_max_debate_rounds(research_depth)
+    # Risk debate is 3 agents per round; one round is enough below "Deep".
+    default_config["max_risk_discuss_rounds"] = (
+        2 if str(research_depth or "").strip().lower() == "deep" else 1
+    )
 
     if language:
         default_config["output_language"] = str(language).strip()
@@ -622,6 +628,37 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
 
     # Current TradingAgents exposes per-node deltas through graph.stream. Use it
     # when a publisher is supplied; otherwise preserve the stable propagate API.
+    if fast_path.parallel_enabled():
+        try:
+            fast_path.install_vendor_cache(_import_module)
+            final_state, decision = fast_path.run_analysts_in_parallel(
+                graph,
+                ticker,
+                analysis_date,
+                asset_type,
+                selected_analysts,
+                _import_module,
+                _extract_reports_from_state,
+                on_update,
+            )
+            normalized = _normalize_propagate_result(final_state, decision, selected_analysts)
+            normalized.setdefault("_engine_adapter", {})
+            normalized["_engine_adapter"].update(
+                {
+                    "api": "fast_path.run_analysts_in_parallel",
+                    "selected_analysts": list(selected_analysts),
+                    "asset_type": asset_type,
+                }
+            )
+            return normalized
+        except Exception as exc:
+            print(
+                "[tradingagents_service] parallel analyst path failed, "
+                f"falling back to sequential graph: {exc}",
+                flush=True,
+            )
+            traceback.print_exc()
+
     stream_graph = getattr(graph, "graph", None)
     stream = getattr(stream_graph, "stream", None)
     propagator = getattr(graph, "propagator", None)
