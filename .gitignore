@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+.DS_Store
+coverage/
+.vscode/
+.idea/
+__pycache__/
+.venv/
+*.pyc
+artifacts/
+data/
