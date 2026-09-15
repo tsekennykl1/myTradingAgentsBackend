@@ -127,16 +127,10 @@ TAIL_STAGES = ("research_debate", "research_manager", "trader", "risk_debate", "
 def normalize_stages(stages: Any) -> Optional[set[str]]:
     """Return the enabled tail stages, or ``None`` when the caller opted out of nothing."""
 
-    if not stages:
+    if stages is None:
         return None
     wanted = {str(item).strip().lower() for item in stages if str(item).strip()}
-    if not wanted:
-        return None
-    enabled = {stage for stage in TAIL_STAGES if stage in wanted}
-    # A request that names only analyst stages must not silently drop the whole tail.
-    if not enabled:
-        return None
-    return enabled
+    return {stage for stage in TAIL_STAGES if stage in wanted}
 
 
 def _passthrough(_state: Any) -> dict[str, Any]:

@@ -235,14 +235,14 @@ def normalize_engine_config(payload: dict[str, Any]) -> dict[str, Any]:
             "Fundamentals Analyst",
         ]
 
-    stages = (
-        payload.get("stages")
-        or payload.get("selected_stages")
-        or params.get("stages")
-        or params.get("selected_stages")
-        or []
-    )
-    stages = [str(x).strip() for x in stages if str(x).strip()]
+    stages = payload.get("stages")
+    if stages is None:
+        stages = payload.get("selected_stages")
+    if stages is None:
+        stages = params.get("stages")
+    if stages is None:
+        stages = params.get("selected_stages")
+    normalized_stages = None if stages is None else [str(x).strip() for x in stages if str(x).strip()]
 
     return {
         "ticker": ticker,
@@ -252,7 +252,7 @@ def normalize_engine_config(payload: dict[str, Any]) -> dict[str, Any]:
         "deepModel": str(deep_model).strip(),
         "researchDepth": str(research_depth).strip() or "Shallow",
         "analysts": analysts,
-        "stages": stages,
+        "stages": normalized_stages,
         "language": str(language).strip() or "English",
         "params": params,
     }

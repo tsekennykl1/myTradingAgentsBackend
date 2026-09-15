@@ -257,7 +257,7 @@ def test_all_stages_run_when_none_are_specified():
     assert final_state["risk_debate_state"]["count"] > 0
 
 
-def test_analyst_only_stage_list_keeps_the_tail():
-    assert fast_path.normalize_stages(["market", "news"]) is None
-    assert fast_path.normalize_stages([]) is None
+def test_analyst_only_stage_list_skips_the_tail():
+    assert fast_path.normalize_stages(["market", "news"]) == set()
+    assert fast_path.normalize_stages([]) == set()
     assert fast_path.normalize_stages(["Trader"]) == {"trader"}
