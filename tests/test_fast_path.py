@@ -32,6 +32,8 @@ class State(TypedDict, total=False):
     sentiment_report: str
     news_report: str
     fundamentals_report: str
+    investment_plan: str
+    trader_investment_plan: str
     investment_debate_state: dict
     risk_debate_state: dict
     final_trade_decision: str
@@ -216,3 +218,46 @@ def test_vendor_cache_memoizes_by_arguments():
 
     fast_path._CACHE.clear()
     fast_path._CACHE_INSTALLED = False
+
+
+def test_skipped_stages_are_not_executed():
+    final_state, decision = fast_path.run_analysts_in_parallel(
+        FakeGraph(),
+        "AAPL",
+        "2026-09-15",
+        "stock",
+        ("market",),
+        _import_module,
+        _extract_reports,
+        None,
+        ["market", "research_manager", "trader", "portfolio_manager"],
+    )
+    # Debates were opted out of, so their state never advances.
+    assert final_state["investment_debate_state"] == {"count": 0}
+    assert final_state["risk_debate_state"] == {"count": 0}
+    # The stages that were kept still ran.
+    assert final_state["investment_plan"] == "plan"
+    assert final_state["trader_investment_plan"] == "trade"
+    assert decision == "BUY"
+
+
+def test_all_stages_run_when_none_are_specified():
+    final_state, _ = fast_path.run_analysts_in_parallel(
+        FakeGraph(),
+        "AAPL",
+        "2026-09-15",
+        "stock",
+        ("market",),
+        _import_module,
+        _extract_reports,
+        None,
+        None,
+    )
+    assert final_state["investment_debate_state"]["count"] > 0
+    assert final_state["risk_debate_state"]["count"] > 0
+
+
+def test_analyst_only_stage_list_keeps_the_tail():
+    assert fast_path.normalize_stages(["market", "news"]) is None
+    assert fast_path.normalize_stages([]) is None
+    assert fast_path.normalize_stages(["Trader"]) == {"trader"}
