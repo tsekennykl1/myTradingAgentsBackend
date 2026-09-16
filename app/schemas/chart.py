@@ -1,3 +1,10 @@
+"""Pydantic response models for GET /chart/{symbol}.
+
+These classes are the typed shape of the chart payload (bars, indicator series,
+detected signals, support/resistance levels). FastAPI uses them to validate the
+response and to generate the OpenAPI docs at /docs.
+"""
+
 from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional

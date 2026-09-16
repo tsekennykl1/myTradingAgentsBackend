@@ -1,3 +1,19 @@
+"""Background workers: the threads that actually run an analysis.
+
+POST /runs only writes a queued row into SQLite and returns immediately. These
+worker threads are what pick that row up, so the browser never waits on an LLM.
+
+Loop for each worker:
+  claim_next_run()  -> atomically take one queued run and put a time-limited
+                       "lease" on it, so two workers can never take the same run
+  _run_in_background() -> execute the whole pipeline for that run
+  sleep and repeat
+
+Tuning (.env): RUN_WORKER_COUNT, RUN_QUEUE_POLL_SECONDS, RUN_LEASE_SECONDS.
+A lease that expires (process killed mid-run) is reclaimed on next startup and
+retried up to RUN_MAX_ATTEMPTS.
+"""
+
 from __future__ import annotations
 
 import os

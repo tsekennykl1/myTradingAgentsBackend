@@ -1,3 +1,30 @@
+"""The heart of the backend: run lifecycle, storage and the analysis pipeline.
+
+Everything about one analysis lives here. Read this file in five blocks:
+
+1. Storage (_init_db, _get_conn, _row_to_run, _update_run, ...)
+   A single SQLite file (DATA_DIR/app.db) holds every run: request payload,
+   status, progress, logs, timings, partial results, reports and the decision.
+
+2. Queue and leasing (create_or_reuse_run, claim_next_run, release_run_lease,
+   reconcile_incomplete_runs, cancel_run)
+   create_or_reuse_run() hashes the request so an identical re-submission
+   returns the existing run instead of paying for a second one.
+
+3. Cheap polling (get_run_status)
+   Returns only small readiness flags plus a monotonic "version" and an ETag, so
+   the dashboard can poll often without transferring whole reports.
+
+4. Progressive publishing (publish_report, _set_progress, _record_stage_event)
+   Each agent's report is committed the moment it finishes, which is why the
+   dashboard can show the Market Analyst while the Trader is still thinking.
+
+5. Execution (_run_in_background and its helpers)
+   Download prices -> write early artifacts -> call the TradingAgents engine via
+   app/tradingagents_service.py -> normalise its output into decision/reports ->
+   write the final artifacts -> mark the run completed, in that order.
+"""
+
 from __future__ import annotations
 
 import json

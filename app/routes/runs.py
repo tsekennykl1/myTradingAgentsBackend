@@ -1,3 +1,30 @@
+"""HTTP endpoints for analyses ("runs") and their artifacts.
+
+This is the whole contract the React dashboard speaks. Every handler is a thin
+wrapper: it validates the request, calls app/services/analyze_service.py (or
+app/artifacts.py) and shapes the response. No business logic lives here.
+
+  GET  /engine                          is the TradingAgents engine importable?
+  GET  /runs                            history list
+  POST /runs                            queue an analysis (202, returns run_id)
+  GET  /runs/{id}                       the full run record
+  POST /runs/{id}/cancel                request cancellation
+  GET  /runs/{id}/status                cheap poll: readiness flags + ETag/304
+  GET  /runs/{id}/logs                  engine log lines
+  GET  /runs/{id}/decision              final decision block only
+  GET  /runs/{id}/reports               every report finished so far
+  GET  /runs/{id}/reports/{name}        one report
+  GET  /runs/{id}/artifacts             URLs of the files below
+  GET  /runs/{id}/market-data[.json]    prices + indicators
+  GET  /runs/{id}/price-chart.json|.png|.html
+  GET  /runs/{id}/chart.png|.html       older names, kept for compatibility
+  GET  /runs/{id}/result.html           printable report page
+  GET  /chart/{symbol}                  ad-hoc chart, no run required
+
+The imports inside each function are deliberate: they keep app start-up fast and
+avoid import cycles with the service layer.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Literal, Optional

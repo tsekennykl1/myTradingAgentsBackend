@@ -1,3 +1,11 @@
+"""Chart rendering: price dataframe -> Plotly HTML and matplotlib PNG.
+
+Pure drawing code. It receives an already-downloaded pandas dataframe (see
+app/market_data.py) and produces pixels/markup; it never fetches data, touches
+the database, or knows what a "run" is. build_plotly_figure() is the core: price
+candles, moving averages, volume and indicator panels.
+"""
+
 from __future__ import annotations
 
 from io import BytesIO

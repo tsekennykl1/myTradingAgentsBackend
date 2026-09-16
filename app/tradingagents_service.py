@@ -1,3 +1,24 @@
+"""Adapter between this backend and the vendored TradingAgents framework.
+
+The TradingAgents/ directory is upstream research code (Tauric Research, 2024 -
+arXiv 2412.20138) and is never modified. Its public API has changed between
+versions, so this file deliberately discovers it at runtime instead of importing
+a fixed symbol:
+
+  _resolve_graph_class()/_resolve_callable()  find TradingAgentsGraph or an
+      equivalent entry point in the installed package
+  _filter_kwargs_for_signature()              pass only the arguments that this
+      version actually accepts
+  normalize_engine_config()                   translate the dashboard's request
+      (provider, models, analysts, depth, language) into the engine's config
+  _coerce_result_to_dict()                    accept whatever shape it returns
+  _build_mock_result()                        stand-in output when the engine is
+      not installed, so the dashboard stays usable
+
+When app/fast_path.py says parallel mode is enabled, execution is handed to
+fast_path.run_analysts_in_parallel() instead of the engine's sequential graph.
+"""
+
 from __future__ import annotations
 
 import importlib

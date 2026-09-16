@@ -1,3 +1,21 @@
+"""Artifacts: the files a finished (or in-progress) run leaves on disk.
+
+One folder per run under ARTIFACTS_DIR, containing:
+  market-data.json   full OHLCV history plus computed indicators
+  price-chart.json   compact chart payload the React chart reads
+  price-chart.png    static image of the chart (matplotlib)
+  price-chart.html   interactive Plotly chart
+  result.html        printable report page for the whole run
+
+Three families of functions:
+  build_*   compute the content in memory (no disk write)
+  write_*   compute and save it to the run folder
+  get_*     read it back, rebuilding on demand if the file is missing
+
+The HTTP endpoints in app/routes/runs.py only ever call the get_* functions, so
+a browser request can never fail just because a file was cleaned up.
+"""
+
 from __future__ import annotations
 
 import json

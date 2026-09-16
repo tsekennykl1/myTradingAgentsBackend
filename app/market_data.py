@@ -1,3 +1,12 @@
+"""Market data: download prices and compute technical indicators.
+
+download_price_frame() pulls OHLCV history (yfinance) for a ticker and date, and
+the compute_* helpers add the indicators the dashboard shows: RSI, ATR, MACD,
+Bollinger bands, stochastic, OBV and rolling VWAP. Everything here is plain
+pandas maths - no AI, no network beyond the price download - which makes it the
+easiest file in the project to read and test.
+"""
+
 from __future__ import annotations
 
 from typing import Any

@@ -1,3 +1,15 @@
+"""Chart analysis service: indicators, signals and levels for the dashboard.
+
+Powers GET /chart/{symbol}. Three layers, top to bottom in the file:
+  - plain indicator maths (sma, ema, rsi, macd, bollinger, atr, stochastic, obv)
+  - detect_signals() and derive_levels(), which turn those numbers into the
+    human-readable "why this signal" reasons and support/resistance lines
+  - build_chart_response(), which assembles the typed payload in
+    app/schemas/chart.py and, when a run_id is given, merges the AI decision in.
+
+This is deterministic maths, not AI: the same bars always give the same output.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
