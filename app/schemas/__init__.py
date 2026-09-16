@@ -1,3 +1,4 @@
-from .run_config import RunConfig
+"""Request/response schemas shared by the API routes.
 
-__all__ = ["RunConfig"]
+Import the concrete modules directly, e.g. ``from app.schemas.chart import ChartResponse``.
+"""
