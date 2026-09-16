@@ -2,8 +2,11 @@
 
 Upstream project: <https://github.com/TauricResearch/TradingAgents> — Yijia Xiao,
 Edward Sun, Di Luo, Wei Wang (Tauric Research, 2024),
-[arXiv:2412.20138](https://arxiv.org/abs/2412.20138). It is vendored here as the
-`TradingAgents/` submodule and is **never modified**.
+[arXiv:2412.20138](https://arxiv.org/abs/2412.20138). It is installed as the pip
+package `tradingagents` (pinned to `v0.4.0` in `requirements.txt`) and is
+**never modified**. Older checkouts that still have a local `TradingAgents/`
+folder keep working: the loader adds it to `sys.path` when present, and you can
+point elsewhere with `TRADINGAGENTS_LOCAL_DIR`.
 
 ## The idea
 

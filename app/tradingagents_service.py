@@ -33,10 +33,20 @@ from app import fast_path
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-LOCAL_TRADINGAGENTS_REPO_DIR = BASE_DIR / "TradingAgents"
+# The framework is normally installed with pip (see requirements.txt:
+# tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git).
+# A checkout next to this backend is only an optional fallback, kept so an
+# existing clone keeps working; set TRADINGAGENTS_LOCAL_DIR to point elsewhere.
+LOCAL_TRADINGAGENTS_REPO_DIR = Path(
+    os.getenv("TRADINGAGENTS_LOCAL_DIR") or (BASE_DIR / "TradingAgents")
+)
 
 
 def _ensure_local_repo_on_syspath() -> None:
+    """Add a local TradingAgents checkout to sys.path if one exists.
+
+    No-op when the framework is pip-installed, which is the default.
+    """
     if not LOCAL_TRADINGAGENTS_REPO_DIR.exists():
         return
 

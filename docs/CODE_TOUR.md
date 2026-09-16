@@ -7,10 +7,12 @@ Each file starts with a docstring; read that before the code.
 The whole application in one screen: load `.env`, allow the dashboard's origin,
 start workers, mount routes. Notice how little it does.
 
-## 2. `app/routes/runs.py`
+## 2. `app/routes/runs.py` and `app/mcp_server.py`
 The complete contract with the browser. Every handler is three to ten lines:
 validate, call a service function, return. Skim all of them — you now know every
-capability the backend has.
+capability the backend has. `mcp_server.py` presents the same service functions as
+assistant tools; compare `POST /runs` with `create_analysis`, then compare their
+status/report readers.
 
 ## 3. `app/market_data.py`
 The easiest real file. Download a price history, compute RSI, MACD, ATR,
@@ -68,6 +70,8 @@ The `.env` generator. Interesting mainly for its four catalogues
 3. Kill the server mid-run and restart it — observe the lease being reclaimed.
 4. Add a print inside `publish_report()` to see reports commit one at a time.
 5. `pytest -q tests/test_fast_path.py` — it stubs the engine, so it runs offline.
+6. Connect an MCP inspector to `http://127.0.0.1:8000/mcp`, create a run, then
+   confirm the same run appears under `GET /runs` and the dashboard History page.
 
 ## Conventions used throughout
 

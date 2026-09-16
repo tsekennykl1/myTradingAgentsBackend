@@ -2,6 +2,10 @@
 
 ## Step 0 — the request
 
+The same request can enter through `POST /runs` from the dashboard or through the
+MCP `create_analysis` tool from an AI assistant. Both call
+`create_or_reuse_run()`; every later step is identical.
+
 ```http
 POST /runs
 {
@@ -83,6 +87,11 @@ as the only signal that the full report is downloadable.
 | `/runs/{id}/price-chart.json` | only when the chart becomes ready | medium |
 | `/runs/{id}/result.html` | once, when completed | large |
 | `/health` | rarely (slow interval once connected) | tiny |
+
+An MCP client follows the same efficient pattern with tools: call
+`get_analysis_status`, wait for `poll_after_ms`, then call result tools only after
+their readiness flags change. MCP-created runs appear in the dashboard and History
+because both interfaces read the same SQLite rows.
 
 ## Failure paths
 

@@ -4,21 +4,21 @@ A small FastAPI service that runs multi-agent stock analyses with the
 [TradingAgents](https://github.com/TauricResearch/TradingAgents) framework and serves the
 results to the **My Trading Agent** React dashboard.
 
-> **Acknowledgement.** The agent framework in `TradingAgents/` is the work of
+> **Acknowledgement.** The agent framework is the work of
 > Tauric Research — Yijia Xiao, Edward Sun, Di Luo and Wei Wang, *"TradingAgents:
 > Multi-Agents LLM Financial Trading Framework"* (2024),
 > [arXiv:2412.20138](https://arxiv.org/abs/2412.20138). This repository **wraps**
-> that framework; nothing inside `TradingAgents/` is modified.
+> that framework and never modifies it. It is installed as a normal pip package
+> straight from the public repository (see `requirements.txt`), so no copy of the
+> framework lives in this repository.
 
 ---
 
 ## 1. Read this first: the 60-second mental model
 
 ```
-Browser (React dashboard)
-        |  HTTP/JSON
-        v
-FastAPI app  (app/main.py -> app/routes/*)
+Browser (React dashboard) -- HTTP/JSON --+
+AI assistant ------------ MCP /mcp -----+--> FastAPI app
         |  writes a "queued" row
         v
 SQLite  data/app.db          <-- one row = one analysis ("run")
@@ -29,7 +29,7 @@ analyze_service._run_in_background()
         |-- market data (yfinance)  -> app/market_data.py
         |-- charts + files          -> app/charts.py, app/artifacts.py
         `-- AI analysis             -> app/tradingagents_service.py
-                                          -> TradingAgents/ (LLM agents)
+                                          -> tradingagents package (LLM agents)
 ```
 
 Three ideas explain almost everything:
@@ -47,12 +47,12 @@ Three ideas explain almost everything:
 ## 2. Quick start
 
 ```bash
-git clone --recurse-submodules https://github.com/tsekennykl1/myTradingAgentsBackend.git
+git clone https://github.com/tsekennykl1/myTradingAgentsBackend.git
 cd myTradingAgentsBackend
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt    # also pip-installs TradingAgents v0.4.0 from GitHub
 
-python app/initialSetup.py          # guided .env creation (API keys, models)
+python app/initialSetup.py          # guided .env creation (API keys, models, MCP access key)
 # or:  cp .env.example .env  and edit it by hand
 
 uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -76,18 +76,21 @@ Two settings matter for the dashboard:
 | --- | --- |
 | `app/main.py` | FastAPI app: env loading, CORS, startup, `/` and `/health`. |
 | `app/routes/runs.py` | Every run and artifact endpoint (the dashboard's contract). |
+| `app/mcp_server.py` | Public MCP tools that call the same run services as HTTP routes. |
 | `app/routes/providers.py` | Which LLM provider is active, key checks, credit balance. |
 | `app/services/analyze_service.py` | Run lifecycle: SQLite storage, queue, progress, pipeline. |
 | `app/services/chart_service.py` | Indicator maths, signal detection, `/chart/{symbol}`. |
 | `app/tradingagents_service.py` | Version-tolerant adapter to the TradingAgents framework. |
 | `app/fast_path.py` | Optional speed-ups: parallel analysts/risk debaters, data cache. |
 | `app/market_data.py` | Price download plus RSI/MACD/ATR/Bollinger/etc. |
+| `app/hk_securities.py` | Imports English and Chinese stock names from the two official HKEX XLSX files into SQLite. |
+| `app/data/ListOfSecurities*.xlsx` | Raw HKEX English/Chinese security lists; these are the stock-name source of truth. |
 | `app/charts.py` | Plotly HTML and matplotlib PNG rendering. |
 | `app/artifacts.py` | Per-run files: market data, chart payloads, `result.html`. |
 | `app/worker.py` | The background threads that execute queued runs. |
-| `app/initialSetup.py` | Interactive and unattended `.env` generator and validator. |
+| `app/initialSetup.py` | Interactive and unattended `.env` generator and validator. Asks whether to enable the MCP server and then collects or generates `MCP_ACCESS_KEY` (min 24 chars, 64 recommended, no spaces). Non-interactive configs accept `mcp_enabled`, `mcp_access_key`, `mcp_allowed_tools`, `mcp_create_runs_per_hour`. |
 | `app/schemas/chart.py` | Typed response models for the chart endpoint. |
-| `TradingAgents/` | Upstream framework (git submodule). **Do not edit.** |
+| _(no local folder)_ | The upstream framework is the pip package `tradingagents`, installed from <https://github.com/TauricResearch/TradingAgents>. **Never edited.** |
 | `tests/` | pytest suite (`pytest -q`). |
 
 Every file above starts with a docstring explaining its role — open one and read
@@ -133,6 +136,22 @@ lease that expires; startup reclaims it and retries up to `RUN_MAX_ATTEMPTS`.
 | `ARTIFACTS_DIR/<run_id>/` | `market-data.json`, `price-chart.json/.png/.html`, `result.html`. |
 | Process memory | Short-lived caches for repeated market/news lookups (`app/fast_path.py`). |
 
+### Updating Hong Kong stock names
+
+Download the latest matching English and Chinese **List of Securities** files
+from HKEX. Keep their original names and replace:
+
+```text
+app/data/ListOfSecurities.xlsx
+app/data/ListOfSecurities_c.xlsx
+```
+
+Restart the backend. On its first Hong Kong security lookup, it reads both
+workbooks, joins them by stock code, validates them, and replaces the
+`hk_securities` rows in `data/app.db`. The English workbook supplies the code,
+English name, and category; the Chinese workbook supplies the Chinese name.
+`app/data/hk_securities.json` is no longer used or required.
+
 Both directories must live on a **persistent volume**. Because state is local,
 running more than one instance behind a load balancer needs shared storage first.
 
@@ -157,21 +176,53 @@ same `.env`.
 
 ## 7. MCP (Model Context Protocol)
 
-This backend **does not run an MCP server** today. It is a plain HTTP/JSON service,
-and the dashboard is its only client. If you ever want an AI assistant to drive it
-directly, the clean path is a thin MCP server that wraps the existing endpoints
-(`create_run`, `get_status`, `get_reports`) rather than new logic — the service
-layer in `app/services/analyze_service.py` is already the right seam for it.
-Inside `TradingAgents/`, agents reach the outside world through their own tool
-interfaces, not MCP.
+The app mounts a stateless Streamable HTTP MCP server at `/mcp`. ChatGPT, Claude,
+Cursor, Codex, or another MCP client can use the same queue, reports, artifacts,
+and provider catalogue as the React dashboard. Add this URL to the client:
+
+```text
+http://127.0.0.1:8000/mcp
+```
+
+For a hosted engine, replace the host with `PUBLIC_BASE_URL`. Tools are:
+
+- Run control: `create_analysis`, `cancel_analysis`
+- Run reads: `list_analyses`, `get_analysis`, `get_analysis_status`
+- Results: `get_decision`, `list_reports`, `get_report`, `get_chart_data`
+- Context: `get_market_snapshot`, `get_earnings`, `get_engine_info`, `list_ai_models`
+
+`create_analysis` returns quickly; poll `get_analysis_status` using its
+`poll_after_ms`, then read reports and charts as readiness fields change. Runs
+created over MCP appear in the dashboard's Historical Analysis page because MCP
+calls `analyze_service.py` directly instead of maintaining separate state.
+
+> **Public-access warning.** There is no login on this MCP. Anyone who can reach
+> `/mcp` can read all stored analyses, start runs that spend configured LLM credit,
+> and cancel active runs. Every request must carry the shared `MCP_ACCESS_KEY`
+> (`Authorization: Bearer <key>` or `X-MCP-Key: <key>`); requests without it get
+> HTTP 401. If `MCP_ACCESS_KEY` is unset, `/mcp` refuses everything. Still
+> restrict the backend at the firewall/reverse proxy when it should not be
+> internet-accessible.
+
+Operator controls in `.env`:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MCP_ACCESS_KEY` | empty (closed) | Shared key every MCP caller must send; without it `/mcp` returns 401. Generate with `openssl rand -hex 32`. |
+| `MCP_ENABLED` | `1` | Set `0` before startup to omit the endpoint. |
+| `MCP_ALLOWED_TOOLS` | empty (all) | Comma-separated allow-list; omit create/cancel for read-only access. |
+| `MCP_CREATE_RUNS_PER_HOUR` | `12` | Process-wide cap for public analysis creation. |
+
+The MCP never exposes API-key values, provider switching, arbitrary files, or
+internal paths. Inside the `tradingagents` package, agents still use the upstream framework's
+own tool interfaces; MCP is an external client interface around this backend.
 
 ---
 
 ## 8. Tests
 
 ```bash
-pip install -r requirements-dev.txt
-pytest -q
+pytest -q   # pytest is already in requirements.txt
 ```
 
 `tests/test_readiness.py` covers the status/readiness contract;
@@ -183,5 +234,5 @@ against a stubbed engine, so no API keys or network are needed.
 ## 9. License and credit
 
 The wrapper code in `app/` is yours to use. The vendored framework in
-`TradingAgents/` remains under its upstream license and copyright (Tauric
+The `tradingagents` framework remains under its upstream license and copyright (Tauric
 Research). Please keep the citation in section 1 when you share this project.

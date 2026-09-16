@@ -4,8 +4,12 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 python-dotenv>=1.0.1
 
+# MCP server
+mcp>=1.26.0,<2
+
 # Data / HTTP
 pandas>=2.2.2
+openpyxl>=3.1.5
 numpy>=1.26.4
 requests>=2.31.0
 httpx>=0.27.0
@@ -16,5 +20,9 @@ plotly>=5.24.1
 matplotlib>=3.9.2
 kaleido>=0.2.1
 
-# Local package
--e ./TradingAgents
+# Upstream agent framework (public repo, installed with pip; no local folder needed)
+tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@v0.4.0
+
+# Tests (needed to run tests/ with pytest)
+pytest>=8.3.0
+pytest-asyncio>=0.23.0

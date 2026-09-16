@@ -1,13 +1,13 @@
 {
   "model": "deepseek-v4-pro",
   "ticker": "0700.HK",
-  "end_date": "2026-01-15",
+  "end_date": "2026-08-31",
   "params": {
     "llm_provider": "deepseek",
     "deep_think_llm": "deepseek-v4-pro",
     "quick_think_llm": "deepseek-v4-flash",
     "max_debate_rounds": 1,
-    "temperature": 0.1,
+    "temperature": 0.0,
     "checkpoint_enabled": true
   }
 }

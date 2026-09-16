@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import os
 import urllib.request
 from datetime import datetime
@@ -324,6 +325,10 @@ def get_ordered_env_keys(values: dict[str, str]) -> list[str]:
         "AWS_DEFAULT_REGION",
         "ALPHA_VANTAGE_API_KEY",
         "FRED_API_KEY",
+        "MCP_ENABLED",
+        "MCP_ACCESS_KEY",
+        "MCP_ALLOWED_TOOLS",
+        "MCP_CREATE_RUNS_PER_HOUR",
     ]
 
     seen = set()
@@ -617,6 +622,94 @@ def validate_all_before_save(env: dict[str, str]) -> list[str]:
     return errors
 
 
+MCP_KEY_MIN_LENGTH = 24
+
+
+def generate_access_key(length: int = 64) -> str:
+    """Return a cryptographically strong hex key (length = number of hex chars)."""
+    return secrets.token_hex(max(16, length // 2))
+
+
+def validate_access_key(value: str) -> tuple[bool, str]:
+    """Check a user-supplied MCP access key against the minimum requirements."""
+    value = value.strip()
+    if len(value) < MCP_KEY_MIN_LENGTH:
+        return False, f"The key must be at least {MCP_KEY_MIN_LENGTH} characters long."
+    if any(ch.isspace() for ch in value):
+        return False, "The key must not contain spaces."
+    if len(set(value)) < 8:
+        return False, "The key looks too repetitive. Use a random value."
+    return True, ""
+
+
+def configure_mcp(env: dict[str, str]) -> None:
+    """Ask whether to expose the MCP server, then collect its access key."""
+    print("-" * 72)
+    print("MCP server (lets AI assistants call this engine)")
+    print("-" * 72)
+    print("The MCP endpoint is served at /mcp. Any caller can start analyses and")
+    print("read run results, so it is protected by a shared access key.")
+    print()
+
+    already_on = env.get("MCP_ENABLED", "1").strip().lower() not in {"0", "false", "no", ""}
+    enable = prompt_yes_no("Do you want to set up the MCP server now?", default=already_on)
+
+    if not enable:
+        env["MCP_ENABLED"] = "0"
+        env["MCP_ACCESS_KEY"] = ""
+        print("MCP server disabled. /mcp will refuse every request.")
+        print()
+        return
+
+    env["MCP_ENABLED"] = "1"
+
+    print()
+    print("Access key requirements:")
+    print(f"  - at least {MCP_KEY_MIN_LENGTH} characters (64 recommended)")
+    print("  - random, no spaces, not a word or a password you use elsewhere")
+    print("  - generate one with: openssl rand -hex 32")
+    print("  - the same value must be used by every AI assistant / frontend that")
+    print("    calls /mcp (Authorization: Bearer <key> or X-MCP-Key: <key>)")
+    print("  - leaving it empty keeps /mcp closed to everyone")
+    print()
+
+    existing_key = env.get("MCP_ACCESS_KEY", "").strip()
+    if existing_key:
+        print(f"Current key: {mask_secret(existing_key)}")
+        if not prompt_yes_no("Replace the existing MCP access key?", default=False):
+            print()
+            return
+
+    if prompt_yes_no("Generate a strong key for you?", default=True):
+        key = generate_access_key()
+        env["MCP_ACCESS_KEY"] = key
+        print()
+        print("Generated MCP access key (copy it now, it is stored only in .env):")
+        print(f"  {key}")
+        print()
+    else:
+        while True:
+            key = prompt("Enter MCP_ACCESS_KEY", required=True)
+            ok, reason = validate_access_key(key)
+            if ok:
+                env["MCP_ACCESS_KEY"] = key.strip()
+                break
+            print(f"❌ {reason}")
+
+    env["MCP_CREATE_RUNS_PER_HOUR"] = str(
+        prompt_int(
+            "Max analyses an assistant may start per hour",
+            default=int(env.get("MCP_CREATE_RUNS_PER_HOUR", "12") or 12),
+            min_value=1,
+        )
+    )
+    env["MCP_ALLOWED_TOOLS"] = prompt(
+        "Allowed MCP tools (comma separated, blank = all)",
+        default=env.get("MCP_ALLOWED_TOOLS", ""),
+    )
+    print()
+
+
 def run_interactive() -> int:
     print("=" * 72)
     print("TradingAgents Backend Initial Setup")
@@ -813,6 +906,8 @@ def run_interactive() -> int:
     )
     print()
 
+    configure_mcp(env)
+
     validation_errors = validate_all_before_save(env)
     if validation_errors:
         print("❌ Validation failed. The configuration will NOT be saved.")
@@ -904,6 +999,10 @@ CONFIG_ALIASES = {
     "memory_log_path": "TRADINGAGENTS_MEMORY_LOG_PATH",
     "fred_api_key": "FRED_API_KEY",
     "alpha_vantage_api_key": "ALPHA_VANTAGE_API_KEY",
+    "mcp_enabled": "MCP_ENABLED",
+    "mcp_access_key": "MCP_ACCESS_KEY",
+    "mcp_allowed_tools": "MCP_ALLOWED_TOOLS",
+    "mcp_create_runs_per_hour": "MCP_CREATE_RUNS_PER_HOUR",
     "public_base_url": "PUBLIC_BASE_URL",
     "frontend_origins": "FRONTEND_ORIGINS",
 }
@@ -991,6 +1090,10 @@ def config_to_env(config: dict, existing: dict[str, str]) -> dict[str, str]:
     env.setdefault("TRADINGAGENTS_CHECKPOINT_ENABLED", "true")
     env.setdefault("TRADINGAGENTS_CACHE_DIR", str(PROJECT_ROOT / "data" / "tradingagents_cache"))
     env.setdefault("TRADINGAGENTS_MEMORY_LOG_PATH", str(PROJECT_ROOT / "data" / "trading_memory.md"))
+    env.setdefault("MCP_ENABLED", "1")
+    env.setdefault("MCP_ACCESS_KEY", "")
+    env.setdefault("MCP_CREATE_RUNS_PER_HOUR", "12")
+    env.setdefault("MCP_ALLOWED_TOOLS", "")
     env.setdefault("FRED_API_KEY", DEFAULT_FRED_API_KEY)
     env.setdefault("ALPHA_VANTAGE_API_KEY", DEFAULT_ALPHA_VANTAGE_API_KEY)
 
@@ -1052,6 +1155,9 @@ def run_non_interactive(source: str, write_example: bool = True, write_sample: b
     print(f"  Quick-think model: {env['TRADINGAGENTS_QUICK_THINK_LLM']}")
     print(f"  FRED key:          {mask_secret(env.get('FRED_API_KEY', ''))}")
     print(f"  Alpha Vantage key: {mask_secret(env.get('ALPHA_VANTAGE_API_KEY', ''))}")
+    mcp_on = env.get("MCP_ENABLED", "1").strip().lower() not in {"0", "false", "no", ""}
+    print(f"  MCP server:        {'enabled' if mcp_on else 'disabled'}")
+    print(f"  MCP access key:    {mask_secret(env.get('MCP_ACCESS_KEY', ''))}")
     print()
     print("Setup complete.")
     return 0

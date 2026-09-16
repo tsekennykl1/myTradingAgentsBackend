@@ -3,13 +3,16 @@
 ## Layers
 
 ```
- HTTP layer        app/main.py, app/routes/*.py
+ Client layer      React dashboard over HTTP
+                   AI assistants over Streamable HTTP MCP
+ ---------------------------------------------------------------
+ Interface layer   app/routes/*.py, app/mcp_server.py
                    validate input, shape responses, no business logic
  ---------------------------------------------------------------
  Service layer     app/services/analyze_service.py   run lifecycle
                    app/services/chart_service.py     chart analysis
  ---------------------------------------------------------------
- Adapters          app/tradingagents_service.py  -> TradingAgents/ (LLM agents)
+ Adapters          app/tradingagents_service.py  -> tradingagents pip package
                    app/market_data.py            -> yfinance prices
                    app/charts.py                 -> Plotly / matplotlib
                    app/artifacts.py              -> files on disk
@@ -19,7 +22,16 @@
 
 The rule to remember: **routes never compute, services never render HTTP.** If you
 need new behaviour, add it in the service layer and expose it with a three-line
-route handler.
+route or MCP tool handler. Both interfaces call the same functions, so there is
+only one queue and one history.
+
+## MCP boundary
+
+`app/mcp_server.py` is an adapter, not another analysis engine. Its tools validate
+bounded arguments and call `analyze_service`, artifact readers, or the existing
+market/provider helpers. An analysis remains asynchronous: create returns a run id,
+status is polled, and reports are fetched when ready. The MCP is public and has no
+user identity; network controls and its tool allow-list are the security boundary.
 
 ## Concurrency model
 
@@ -54,7 +66,8 @@ flips to true.
 
 ## Boundaries worth keeping
 
-- `TradingAgents/` is a submodule: upstream code, never edited. All compatibility
+- `tradingagents` is an upstream pip package (installed from the public GitHub
+  repository), never edited and no longer vendored here. All compatibility
   work lives in `app/tradingagents_service.py`.
 - Chart maths (`chart_service.py`, `market_data.py`) is pure and deterministic —
   easy to unit test, no AI involved.

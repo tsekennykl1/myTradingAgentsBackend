@@ -18,21 +18,38 @@ Nothing in this file talks to the AI engine directly; see docs/ARCHITECTURE.md.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.mcp_server import mcp, mcp_http_app
 from app.routes import router
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BASE_DIR / ".env")
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    from app.services.analyze_service import reconcile_incomplete_runs
+    from app.worker import start_workers
+
+    reconcile_incomplete_runs()
+    start_workers()
+    if os.getenv("MCP_ENABLED", "1").strip().lower() in {"0", "false", "no", "off"}:
+        yield
+        return
+    async with mcp.session_manager.run():
+        yield
+
+
 app = FastAPI(
     title="Trading Analysis API",
-    version="1.0.0",
+    version="1.1.0",
+    lifespan=lifespan,
 )
 
 frontend_origins = [value.strip() for value in os.getenv(
@@ -45,15 +62,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    from app.services.analyze_service import reconcile_incomplete_runs
-    from app.worker import start_workers
-
-    reconcile_incomplete_runs()
-    start_workers()
 
 
 @app.get("/")
@@ -72,3 +80,6 @@ def health() -> dict[str, str]:
 
 
 app.include_router(router)
+
+if os.getenv("MCP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
+    app.mount("/mcp", mcp_http_app)

@@ -197,3 +197,26 @@ def earnings(
         ],
     }
     return _store(cache_key, result)
+
+
+@router.get("/security")
+def security(ticker: str = Query(..., min_length=1)) -> dict[str, Any]:
+    """HKEX directory lookup: English and Chinese name for a Hong Kong listing.
+
+    The ``hk_securities`` table is refreshed directly from the paired English
+    and Chinese HKEX XLSX source files once per backend process, so the
+    dashboard can title the market snapshot before any price data arrives.
+
+    GET /market/security?ticker=0700.HK
+    -> {"available": true, "ticker": "0700.HK", "code": "00700",
+        "name_en": "TENCENT", "name_zh": "騰訊控股", "category": "Equity"}
+    """
+    from app import hk_securities
+
+    symbol = ticker.strip().upper()
+    if not hk_securities.is_hk_ticker(symbol):
+        return _unavailable("Only Hong Kong listings (.HK) are in this directory.")
+    row = hk_securities.lookup(symbol)
+    if not row:
+        return _unavailable(f"{symbol} is not in the HKEX securities list.")
+    return {"available": True, **row}
