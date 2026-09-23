@@ -19,7 +19,7 @@ if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 ||
       build-essential libpq-dev
   elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
     PKG_MGR=$(command -v dnf 2>/dev/null || command -v yum)
-    "${PKG_MGR}" install -y \
+    "${PKG_MGR}" install -y --allowerasing \
       aws-cli curl git unzip python3 python3-pip python3-virtualenv jq \
       gcc libpq-devel
   else
