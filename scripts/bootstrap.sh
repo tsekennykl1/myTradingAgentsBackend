@@ -29,7 +29,7 @@ else
 fi
 
 PYTHON_BIN=$(command -v python3.12 2>/dev/null) || {
-  echo "python3.12 not found after package install; cannot satisfy tradingagents >=3.12 requirement" >&2
+  echo "python3.12 not found after package install; cannot satisfy tradingagents==0.4.0 Python >=3.12 requirement" >&2
   exit 1
 }
 
