@@ -44,11 +44,19 @@ if [ ! -f "${APP_ROOT}/app/main.py" ]; then
   exit 1
 fi
 
-# .env is never in the repo: it comes from S3 config
-aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" || {
-  echo "Missing .env in S3 config bucket" >&2
-  exit 1
-}
+# .env is never in the repo: it comes from S3 config.
+# A missing S3 .env is non-fatal so the service can at least start and serve
+# /health (required for the deploy health-check to pass).  Without secrets the
+# analysis endpoints will not work, but infrastructure/routing is unaffected.
+if ! aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" 2>/dev/null; then
+  echo "Warning: config/.env not found in S3 bucket ${CONFIG_BUCKET}." \
+       "Using .env.example as a safe default; upload a real .env to S3 to enable all features." >&2
+  if [ -f "${APP_ROOT}/.env.example" ]; then
+    cp "${APP_ROOT}/.env.example" "${APP_ROOT}/.env"
+  else
+    touch "${APP_ROOT}/.env"
+  fi
+fi
 chmod 600 "${APP_ROOT}/.env"
 
 if [ ! -d "${APP_ROOT}/.venv" ]; then
