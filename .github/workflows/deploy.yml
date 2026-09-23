@@ -1,0 +1,105 @@
+name: Deploy backend to S3 + EC2
+
+# Put this file in the backend repo at: .github/workflows/deploy.yml
+#
+# What it does on every push to main:
+#   1. packages the backend source into backend.zip
+#   2. uploads it to S3 under releases/<commit sha>/backend.zip
+#   3. writes current/release.txt so the instance knows which release is live
+#   4. tells the EC2 instance (via SSM) to re-run the bootstrap script
+#   5. waits for /health to answer before calling the deploy successful
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-east-1
+  BUCKET: s3general-148535751717-ap-east-1-an
+  INSTANCE_ID: i-00c16218eb325facf
+  SERVICE_NAME: mytradingagents-backend
+  APP_ROOT: /opt/myTradingAgentsBackend
+
+permissions:
+  id-token: write   # needed for OIDC role assumption
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Preferred: OIDC role (no long-lived keys).
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # If you use access keys instead, delete role-to-assume above and use:
+          # aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          # aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Package backend
+        run: |
+          set -euo pipefail
+          zip -r backend.zip . \
+            -x '.git/*' '.github/*' '.venv/*' '**/__pycache__/*' '*.pyc' \
+               'data/*' 'artifacts/*' '.env'
+          unzip -l backend.zip | tail -n 5
+
+      - name: Upload release to S3
+        run: |
+          set -euo pipefail
+          SHA="${GITHUB_SHA}"
+          aws s3 cp backend.zip "s3://${BUCKET}/releases/${SHA}/backend.zip"
+          printf '%s' "${SHA}" > release.txt
+          aws s3 cp release.txt "s3://${BUCKET}/current/release.txt"
+          # keep the bootstrap script on S3 in sync with the repo copy
+          if [ -f scripts/bootstrap.sh ]; then
+            aws s3 cp scripts/bootstrap.sh "s3://${BUCKET}/scripts/bootstrap.sh"
+          fi
+
+      - name: Trigger deployment on EC2 via SSM
+        id: ssm
+        run: |
+          set -euo pipefail
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy ${GITHUB_SHA}" \
+            --parameters commands="[
+              \"set -euxo pipefail\",
+              \"export APP_ROOT=${APP_ROOT}\",
+              \"export CODE_BUCKET=${BUCKET}\",
+              \"export CONFIG_BUCKET=${BUCKET}\",
+              \"export SERVICE_NAME=${SERVICE_NAME}\",
+              \"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh\",
+              \"chmod +x /tmp/bootstrap.sh\",
+              \"bash /tmp/bootstrap.sh\"
+            ]" \
+            --query 'Command.CommandId' --output text)
+          echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
+          echo "SSM command: ${CMD_ID}"
+
+      - name: Wait for deployment to finish
+        run: |
+          set -euo pipefail
+          CMD_ID="${{ steps.ssm.outputs.command_id }}"
+          for i in $(seq 1 60); do
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id "${CMD_ID}" --details \
+              --query 'CommandInvocations[0].Status' --output text)
+            echo "status: ${STATUS}"
+            case "${STATUS}" in
+              Success) break ;;
+              Failed|Cancelled|TimedOut) echo "deploy failed"; FAILED=1; break ;;
+            esac
+            sleep 10
+          done
+          aws ssm list-command-invocations --command-id "${CMD_ID}" --details \
+            --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text || true
+          if [ "${FAILED:-0}" = "1" ] || [ "${STATUS}" != "Success" ]; then
+            exit 1
+          fi

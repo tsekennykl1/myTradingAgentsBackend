@@ -10,7 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+# This script lives in backend/app/. Configuration belongs in the backend
+# root, beside requirements.txt, because app/main.py reads backend/.env.
+APP_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_DIR.parent if APP_DIR.name == "app" else APP_DIR
 ENV_FILE = PROJECT_ROOT / ".env"
 ENV_EXAMPLE_FILE = PROJECT_ROOT / ".env.example"
 SAMPLE_PAYLOAD_FILE = PROJECT_ROOT / "sample_run_payload.json"
