@@ -10,13 +10,22 @@ CONFIG_BUCKET="${CONFIG_BUCKET:-s3general-148535751717-ap-east-1-an}"
 SERVICE_NAME="${SERVICE_NAME:-mytradingagents-backend}"
 RELEASE_FILE="${RELEASE_FILE:-current/release.txt}"
 
-export DEBIAN_FRONTEND=noninteractive
-
 if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
-  apt-get update
-  apt-get install -y --no-install-recommends \
-    awscli curl git unzip python3 python3-pip python3-venv jq \
-    build-essential libpq-dev
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+      awscli curl git unzip python3 python3-pip python3-venv jq \
+      build-essential libpq-dev
+  elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    PKG_MGR=$(command -v dnf 2>/dev/null || command -v yum)
+    "${PKG_MGR}" install -y \
+      aws-cli curl git unzip python3 python3-pip python3-virtualenv jq \
+      gcc libpq-devel
+  else
+    echo "No supported package manager found (apt-get, dnf, or yum)" >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "${APP_ROOT}" "${APP_ROOT}/data" "${APP_ROOT}/artifacts"
