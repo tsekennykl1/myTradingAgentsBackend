@@ -11,5 +11,6 @@ def test_bootstrap_requires_python_312_for_tradingagents():
         content,
     )
     assert 'command -v python3.12' in content
+    assert '"${VENV_MAJOR}" -lt 3' in content
     assert '"${VENV_MINOR}" -lt 12' in content
     assert 'Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12)' in content
