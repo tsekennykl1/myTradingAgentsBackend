@@ -71,6 +71,7 @@ jobs:
           ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           MCP_ACCESS_KEY: ${{ secrets.MCP_ACCESS_KEY }}
+          FRONTEND_ORIGINS: ${{ secrets.FRONTEND_ORIGINS }}
         run: |
           set -euo pipefail
           # Build the runtime .env from GitHub secrets and safe defaults.
@@ -86,9 +87,9 @@ jobs:
               'TRADINGAGENTS_CACHE_DIR=/opt/myTradingAgentsBackend/data/tradingagents_cache' \
               'TRADINGAGENTS_MEMORY_LOG_PATH=/opt/myTradingAgentsBackend/data/trading_memory.md' \
               'DATA_DIR=/opt/myTradingAgentsBackend/data' \
-              'FRONTEND_ORIGINS=*' \
               'PUBLIC_BASE_URL=http://127.0.0.1:8000' \
               'MCP_ENABLED=1'
+            printf 'FRONTEND_ORIGINS=%s\n'       "${FRONTEND_ORIGINS:-*}"
             printf 'DEEPSEEK_API_KEY=%s\n'       "${DEEPSEEK_API_KEY}"
             printf 'OPENAI_API_KEY=%s\n'         "${OPENAI_API_KEY}"
             printf 'ANTHROPIC_API_KEY=%s\n'      "${ANTHROPIC_API_KEY}"
