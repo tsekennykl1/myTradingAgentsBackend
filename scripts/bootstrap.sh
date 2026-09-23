@@ -12,10 +12,10 @@ RELEASE_FILE="${RELEASE_FILE:-current/release.txt}"
 
 export DEBIAN_FRONTEND=noninteractive
 
-if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
   apt-get update
   apt-get install -y --no-install-recommends \
-    awscli curl unzip python3 python3-pip python3-venv jq \
+    awscli curl git unzip python3 python3-pip python3-venv jq \
     build-essential libpq-dev
 fi
 
