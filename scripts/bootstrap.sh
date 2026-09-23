@@ -15,7 +15,8 @@ export DEBIAN_FRONTEND=noninteractive
 if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
   apt-get update
   apt-get install -y --no-install-recommends \
-    awscli curl unzip python3 python3-pip python3-venv jq
+    awscli curl unzip python3 python3-pip python3-venv jq \
+    build-essential libpq-dev
 fi
 
 mkdir -p "${APP_ROOT}" "${APP_ROOT}/data" "${APP_ROOT}/artifacts"
@@ -37,8 +38,8 @@ chmod 600 "${APP_ROOT}/.env"
 if [ ! -d "${APP_ROOT}/.venv" ]; then
   python3 -m venv "${APP_ROOT}/.venv"
 fi
-"${APP_ROOT}/.venv/bin/pip" install --upgrade pip
-"${APP_ROOT}/.venv/bin/pip" install -r "${APP_ROOT}/requirements.txt"
+"${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
+"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
 
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
@@ -63,6 +64,13 @@ EOF
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}.service"
 systemctl restart "${SERVICE_NAME}.service"
+
+# ── Early diagnostics: surface the real error immediately ───
+sleep 10
+echo "=== systemctl status ==="
+systemctl status "${SERVICE_NAME}.service" --no-pager || true
+echo "=== journalctl (last 100 lines) ==="
+journalctl -u "${SERVICE_NAME}.service" -n 100 --no-pager || true
 
 for i in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
