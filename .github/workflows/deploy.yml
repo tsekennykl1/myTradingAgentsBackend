@@ -61,6 +61,18 @@ jobs:
             aws s3 cp scripts/bootstrap.sh "s3://${BUCKET}/scripts/bootstrap.sh"
           fi
 
+      - name: Seed .env to S3 config (if secret is available)
+        env:
+          APP_ENV_B64: ${{ secrets.APP_ENV_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "${APP_ENV_B64:-}" ]; then
+            echo "${APP_ENV_B64}" | base64 -d | aws s3 cp - "s3://${BUCKET}/config/.env"
+            echo "Uploaded .env to s3://${BUCKET}/config/.env"
+          else
+            echo "APP_ENV_B64 secret not set; skipping .env upload (bootstrap will use fallback)"
+          fi
+
       - name: Trigger deployment on EC2 via SSM
         id: ssm
         run: |
