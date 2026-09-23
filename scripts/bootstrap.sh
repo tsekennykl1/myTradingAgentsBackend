@@ -18,18 +18,18 @@ if command -v apt-get >/dev/null 2>&1; then
     build-essential libpq-dev
 elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
   PKG_MGR=$(command -v dnf 2>/dev/null || command -v yum)
-  # python3 on Amazon Linux 2023 is 3.9; tradingagents requires >=3.10.
-  # Install python3.11 explicitly so the venv meets that requirement.
+  # python3 on Amazon Linux 2023 is 3.9; tradingagents 0.4.0 requires >=3.12.
+  # Install python3.12 explicitly so the venv meets that requirement.
   "${PKG_MGR}" install -y --allowerasing \
-    aws-cli curl git unzip python3.11 python3-pip jq \
+    aws-cli curl git unzip python3.12 python3-pip jq \
     gcc libpq-devel
 else
   echo "No supported package manager found (apt-get, dnf, or yum)" >&2
   exit 1
 fi
 
-PYTHON_BIN=$(command -v python3.11 2>/dev/null) || {
-  echo "python3.11 not found after package install; cannot satisfy tradingagents >=3.10 requirement" >&2
+PYTHON_BIN=$(command -v python3.12 2>/dev/null) || {
+  echo "python3.12 not found after package install; cannot satisfy tradingagents==0.4.0 Python >=3.12 requirement" >&2
   exit 1
 }
 
@@ -75,11 +75,11 @@ chmod 600 "${APP_ROOT}/.env"
 
 VENV_PYTHON="${APP_ROOT}/.venv/bin/python3"
 if [ -d "${APP_ROOT}/.venv" ]; then
-  # Recreate the venv if it was built with a Python that is too old (< 3.10).
+  # Recreate the venv if it was built with a Python that is too old (< 3.12).
   VENV_MAJOR=$("${VENV_PYTHON}" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo 0)
   VENV_MINOR=$("${VENV_PYTHON}" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 0)
-  if [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" -eq 3 ] && [ "${VENV_MINOR}" -lt 10 ]; }; then
-    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.10); rebuilding with ${PYTHON_BIN}."
+  if [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" -eq 3 ] && [ "${VENV_MINOR}" -lt 12 ]; }; then
+    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); rebuilding with ${PYTHON_BIN}."
     rm -rf "${APP_ROOT}/.venv"
   fi
 fi
