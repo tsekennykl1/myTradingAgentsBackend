@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           zip -r backend.zip . \
             -x '.git/*' '.github/*' '.venv/*' '**/__pycache__/*' '*.pyc' \
-               'data/*' 'artifacts/*' '.env'
+               'data/*' 'artifacts/*' '.env' '*.pem'
           unzip -l backend.zip | tail -n 5
 
       - name: Upload release to S3
@@ -60,6 +60,45 @@ jobs:
           if [ -f scripts/bootstrap.sh ]; then
             aws s3 cp scripts/bootstrap.sh "s3://${BUCKET}/scripts/bootstrap.sh"
           fi
+
+      - name: Sync runtime config to S3
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          MCP_ACCESS_KEY: ${{ secrets.MCP_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          # Build the runtime .env from GitHub secrets and safe defaults.
+          # Non-secret tunables live here; sensitive keys come from repository secrets.
+          {
+            printf '%s\n' \
+              'TRADINGAGENTS_LLM_PROVIDER=deepseek' \
+              'TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4-pro' \
+              'TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4-flash' \
+              'TRADINGAGENTS_MAX_DEBATE_ROUNDS=1' \
+              'TRADINGAGENTS_TEMPERATURE=0.1' \
+              'TRADINGAGENTS_CHECKPOINT_ENABLED=true' \
+              'TRADINGAGENTS_CACHE_DIR=/opt/myTradingAgentsBackend/data/tradingagents_cache' \
+              'TRADINGAGENTS_MEMORY_LOG_PATH=/opt/myTradingAgentsBackend/data/trading_memory.md' \
+              'DATA_DIR=/opt/myTradingAgentsBackend/data' \
+              'FRONTEND_ORIGINS=*' \
+              'PUBLIC_BASE_URL=http://127.0.0.1:8000' \
+              'MCP_ENABLED=1'
+            printf 'DEEPSEEK_API_KEY=%s\n'       "${DEEPSEEK_API_KEY}"
+            printf 'OPENAI_API_KEY=%s\n'         "${OPENAI_API_KEY}"
+            printf 'ANTHROPIC_API_KEY=%s\n'      "${ANTHROPIC_API_KEY}"
+            printf 'GOOGLE_API_KEY=%s\n'         "${GOOGLE_API_KEY}"
+            printf 'XAI_API_KEY=%s\n'            "${XAI_API_KEY}"
+            printf 'ALPHA_VANTAGE_API_KEY=%s\n'  "${ALPHA_VANTAGE_API_KEY}"
+            printf 'FRED_API_KEY=%s\n'           "${FRED_API_KEY}"
+            printf 'MCP_ACCESS_KEY=%s\n'         "${MCP_ACCESS_KEY}"
+          } > /tmp/runtime.env
+          aws s3 cp /tmp/runtime.env "s3://${BUCKET}/config/.env"
 
       - name: Trigger deployment on EC2 via SSM
         id: ssm

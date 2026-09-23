@@ -11,5 +11,6 @@ coverage/
 __pycache__/
 .venv/
 *.pyc
+*.pem
 artifacts/
 data/
