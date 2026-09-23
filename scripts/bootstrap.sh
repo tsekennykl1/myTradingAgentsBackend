@@ -23,7 +23,10 @@ mkdir -p "${APP_ROOT}" "${APP_ROOT}/data" "${APP_ROOT}/artifacts"
 
 aws s3 cp "s3://${CODE_BUCKET}/${RELEASE_FILE}" /tmp/current-release.txt
 RELEASE_SHA="$(tr -d '\r\n' < /tmp/current-release.txt)"
-aws s3 cp "s3://${CODE_BUCKET}/releases/${RELEASE_SHA}/backend.zip" /tmp/backend.zip
+aws s3 cp "s3://${CODE_BUCKET}/releases/${RELEASE_SHA}/backend.zip" /tmp/backend.zip || {
+  echo "Missing release artifact for SHA ${RELEASE_SHA}" >&2
+  exit 1
+}
 
 # clear previous code, keep data/, artifacts/ and .env
 rm -rf "${APP_ROOT}/app"
@@ -31,8 +34,21 @@ rm -f "${APP_ROOT}/requirements.txt" "${APP_ROOT}/requirements-dev.txt" "${APP_R
 
 unzip -o /tmp/backend.zip -d "${APP_ROOT}"
 
+# Validate the release bundle before starting the service
+if [ ! -f "${APP_ROOT}/requirements.txt" ]; then
+  echo "Deploy bundle is missing requirements.txt" >&2
+  exit 1
+fi
+if [ ! -f "${APP_ROOT}/app/main.py" ]; then
+  echo "Deploy bundle is missing app/main.py" >&2
+  exit 1
+fi
+
 # .env is never in the repo: it comes from S3 config
-aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env"
+aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" || {
+  echo "Missing .env in S3 config bucket" >&2
+  exit 1
+}
 chmod 600 "${APP_ROOT}/.env"
 
 if [ ! -d "${APP_ROOT}/.venv" ]; then
