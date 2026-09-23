@@ -10,23 +10,28 @@ CONFIG_BUCKET="${CONFIG_BUCKET:-s3general-148535751717-ap-east-1-an}"
 SERVICE_NAME="${SERVICE_NAME:-mytradingagents-backend}"
 RELEASE_FILE="${RELEASE_FILE:-current/release.txt}"
 
-if ! command -v unzip >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y --no-install-recommends \
-      awscli curl git unzip python3 python3-pip python3-venv jq \
-      build-essential libpq-dev
-  elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-    PKG_MGR=$(command -v dnf 2>/dev/null || command -v yum)
-    "${PKG_MGR}" install -y --allowerasing \
-      aws-cli curl git unzip python3 python3-pip python3-virtualenv jq \
-      gcc libpq-devel
-  else
-    echo "No supported package manager found (apt-get, dnf, or yum)" >&2
-    exit 1
-  fi
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends \
+    awscli curl git unzip python3.11 python3.11-venv python3-pip jq \
+    build-essential libpq-dev
+elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+  PKG_MGR=$(command -v dnf 2>/dev/null || command -v yum)
+  # python3 on Amazon Linux 2023 is 3.9; tradingagents requires >=3.10.
+  # Install python3.11 explicitly so the venv meets that requirement.
+  "${PKG_MGR}" install -y --allowerasing \
+    aws-cli curl git unzip python3.11 python3-pip jq \
+    gcc libpq-devel
+else
+  echo "No supported package manager found (apt-get, dnf, or yum)" >&2
+  exit 1
 fi
+
+PYTHON_BIN=$(command -v python3.11 2>/dev/null) || {
+  echo "python3.11 not found after package install; cannot satisfy tradingagents >=3.10 requirement" >&2
+  exit 1
+}
 
 mkdir -p "${APP_ROOT}" "${APP_ROOT}/data" "${APP_ROOT}/artifacts"
 
@@ -68,8 +73,18 @@ if ! aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" 2>/dev/nul
 fi
 chmod 600 "${APP_ROOT}/.env"
 
+VENV_PYTHON="${APP_ROOT}/.venv/bin/python3"
+if [ -d "${APP_ROOT}/.venv" ]; then
+  # Recreate the venv if it was built with a Python that is too old (< 3.10).
+  VENV_MAJOR=$("${VENV_PYTHON}" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo 0)
+  VENV_MINOR=$("${VENV_PYTHON}" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo 0)
+  if [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" -eq 3 ] && [ "${VENV_MINOR}" -lt 10 ]; }; then
+    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.10); rebuilding with ${PYTHON_BIN}."
+    rm -rf "${APP_ROOT}/.venv"
+  fi
+fi
 if [ ! -d "${APP_ROOT}/.venv" ]; then
-  python3 -m venv "${APP_ROOT}/.venv"
+  "${PYTHON_BIN}" -m venv "${APP_ROOT}/.venv"
 fi
 "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
 "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
