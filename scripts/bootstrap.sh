@@ -25,25 +25,30 @@ fi
 # ── System packages ─────────────────────────────────────────────
 # Check every critical tool, not just unzip/python3.
 NEED_INSTALL=false
-for cmd in unzip python3 pip3 jq git gcc; do
+for cmd in unzip python3.12 pip3 jq git gcc; do
   command -v "$cmd" >/dev/null 2>&1 || { NEED_INSTALL=true; break; }
 done
 
 if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
-    dnf install -y \
-      curl unzip python3 python3-pip jq \
+    dnf install -y --allowerasing \
+      curl unzip python3.12 python3-pip jq \
       gcc gcc-c++ make libpq-devel git
   else
     apt-get update
     apt-get install -y --no-install-recommends \
-      awscli curl unzip python3 python3-pip python3-venv jq \
+      awscli curl unzip python3.12 python3-pip python3.12-venv jq \
       build-essential libpq-dev git
   fi
 fi
 
-# Ensure AWS CLI is available regardless of install path
+# Ensure Python 3.12 and AWS CLI are available regardless of install path
+if ! command -v python3.12 >/dev/null 2>&1; then
+  echo "Python 3.12 not found after package install" >&2
+  exit 1
+fi
+
 if ! command -v aws >/dev/null 2>&1; then
   echo "AWS CLI not found after package install" >&2
   exit 1
@@ -144,18 +149,25 @@ aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" || {
 chmod 600 "${APP_ROOT}/.env"
 
 # ── Python virtual environment and dependencies ─────────────────
-# Recreate the venv if the system Python major.minor changed.
-SYSTEM_PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-VENV_PY_VER=""
+# Recreate the venv if it was created with Python older than 3.12.
 if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  VENV_PY_VER="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+  VENV_MAJOR="$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(sys.version_info.major)' 2>/dev/null || true)"
+  VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+
+  if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
+     { [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" -eq 3 ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
+    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); recreating venv…"
+    rm -rf "${APP_ROOT}/.venv"
+  fi
 fi
 
-if [ "${SYSTEM_PY_VER}" != "${VENV_PY_VER}" ]; then
-  echo "Python version changed (${VENV_PY_VER:-none} → ${SYSTEM_PY_VER}); recreating venv…"
-  rm -rf "${APP_ROOT}/.venv"
-  python3 -m venv "${APP_ROOT}/.venv"
+if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
+  python3.12 -m venv "${APP_ROOT}/.venv" || {
+    echo "Failed to create Python 3.12 virtual environment" >&2
+    exit 1
+  }
 fi
 
 "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
