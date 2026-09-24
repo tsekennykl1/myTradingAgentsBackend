@@ -164,7 +164,10 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
 fi
 
 if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  python3.12 -m venv "${APP_ROOT}/.venv"
+  python3.12 -m venv "${APP_ROOT}/.venv" || {
+    echo "Failed to create Python 3.12 virtual environment" >&2
+    exit 1
+  }
 fi
 
 "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
