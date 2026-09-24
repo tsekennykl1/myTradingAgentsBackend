@@ -151,10 +151,8 @@ chmod 600 "${APP_ROOT}/.env"
 # ── Python virtual environment and dependencies ─────────────────
 # Recreate the venv if it was created with Python older than 3.12.
 if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  VENV_MAJOR="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(sys.version_info.major)' 2>/dev/null || true)"
-  VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+  IFS=' ' read -r VENV_MAJOR VENV_MINOR <<<"$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(sys.version_info.major, sys.version_info.minor)' 2>/dev/null || true)"
 
   if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
      { [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" -eq 3 ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
