@@ -57,10 +57,13 @@ jobs:
           aws s3 cp backend.zip "s3://${BUCKET}/releases/${SHA}/backend.zip"
           printf '%s' "${SHA}" > release.txt
           aws s3 cp release.txt "s3://${BUCKET}/current/release.txt"
-          # keep the bootstrap script on S3 in sync with the repo copy
-          if [ -f scripts/bootstrap.sh ]; then
-            aws s3 cp scripts/bootstrap.sh "s3://${BUCKET}/scripts/bootstrap.sh"
+          # Keep bootstrap.sh on S3 in sync with the repo copy.
+          # The SSM step downloads it from S3 to stay within the 16 KB per-command limit.
+          if [ ! -f scripts/bootstrap.sh ]; then
+            echo "scripts/bootstrap.sh not found in workspace — cannot deploy" >&2
+            exit 1
           fi
+          aws s3 cp scripts/bootstrap.sh "s3://${BUCKET}/scripts/bootstrap.sh"
 
       - name: Seed .env to S3 config (if secret is available)
         env:
@@ -79,25 +82,25 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY' > /tmp/ssm-commands.json
-          import base64
           import json
           import os
           import shlex
-          from pathlib import Path
-          
-          bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
+
+          # Download bootstrap.sh from S3 (already uploaded in the previous step).
+          # Inlining via base64 exceeds the 16 KB per-command SSM limit when the
+          # script grows beyond ~12 KB; fetching from S3 avoids that constraint.
+          # CODE_BUCKET is exported first so the S3 download command can reference
+          # it as a shell variable, keeping the URI free of Python quoting concerns.
           commands = [
               "set -euxo pipefail",
-              f"printf '%s\\n' '{bootstrap_b64}' > /tmp/bootstrap.sh.b64",
-              "base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh",
-              "rm -f /tmp/bootstrap.sh.b64",
-              "chmod +x /tmp/bootstrap.sh",
               # Code and config currently share the same deployment bucket.
               f"export APP_ROOT={shlex.quote(os.environ['APP_ROOT'])}",
               f"export CODE_BUCKET={shlex.quote(os.environ['BUCKET'])}",
               f"export CONFIG_BUCKET={shlex.quote(os.environ['BUCKET'])}",
               f"export SERVICE_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
               f"export PM2_APP_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
+              'aws s3 cp "s3://${CODE_BUCKET}/scripts/bootstrap.sh" /tmp/bootstrap.sh',
+              "chmod +x /tmp/bootstrap.sh",
               "bash /tmp/bootstrap.sh",
           ]
           print(json.dumps({"commands": commands}))
