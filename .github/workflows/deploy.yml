@@ -86,9 +86,21 @@ jobs:
           import json
           import os
           import shlex
+          import sys
           from pathlib import Path
 
           bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
+
+          # SSM Run Command total payload limit is 51,200 bytes.
+          # Guard: fail fast if base64-encoded script alone exceeds 40,000 bytes,
+          # leaving room for the other command strings and JSON overhead.
+          if len(bootstrap_b64) > 40000:
+              print(
+                  f"ERROR: bootstrap.sh base64 is {len(bootstrap_b64)} bytes "
+                  "(> 40 KB limit); use the S3-download approach instead.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
 
           commands = [
               "set -euxo pipefail",
