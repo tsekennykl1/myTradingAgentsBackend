@@ -239,15 +239,20 @@ fi
 # ── Pull .env from S3 (never stored in the repo) ─────────────
 # NOTE: PM2 does NOT support systemd's EnvironmentFile=.  The wrapper
 # script start-backend.sh below sources this file before exec-ing uvicorn.
-if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env"; then
+ENV_PATH="${APP_ROOT}/.env"
+TMP_ENV_PATH="/tmp/deploy-env.$$"
+if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${TMP_ENV_PATH}"; then
+  mv "${TMP_ENV_PATH}" "${ENV_PATH}"
   echo "Loaded .env from s3://${CONFIG_BUCKET}/config/.env"
-elif [ -f "${APP_ROOT}/.env" ]; then
-  echo "WARNING: Missing .env in S3 config bucket; using existing ${APP_ROOT}/.env" >&2
+elif [ -f "${ENV_PATH}" ]; then
+  rm -f "${TMP_ENV_PATH}"
+  echo "WARNING: Missing .env in S3 config bucket; using existing ${ENV_PATH}" >&2
 else
-  echo "Missing .env in S3 config bucket and no existing ${APP_ROOT}/.env fallback" >&2
+  rm -f "${TMP_ENV_PATH}"
+  echo "Missing .env in S3 config bucket and no existing ${ENV_PATH} fallback" >&2
   exit 1
 fi
-chmod 600 "${APP_ROOT}/.env"
+chmod 600 "${ENV_PATH}"
 
 # ── Python virtual environment and dependencies ──────────────
 # tradingagents requires Python >=3.12; always use python3.12 explicitly.

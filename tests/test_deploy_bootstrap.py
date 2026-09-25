@@ -16,6 +16,9 @@ def test_bootstrap_env_fallback_when_s3_env_missing():
     script = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.sh"
     content = script.read_text()
 
-    assert 'if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env"; then' in content
-    assert 'elif [ -f "${APP_ROOT}/.env" ]; then' in content
-    assert 'Missing .env in S3 config bucket and no existing ${APP_ROOT}/.env fallback' in content
+    assert 'TMP_ENV_PATH="/tmp/deploy-env.$$"' in content
+    assert 'if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${TMP_ENV_PATH}"; then' in content
+    assert 'mv "${TMP_ENV_PATH}" "${ENV_PATH}"' in content
+    assert 'elif [ -f "${ENV_PATH}" ]; then' in content
+    assert 'rm -f "${TMP_ENV_PATH}"' in content
+    assert 'Missing .env in S3 config bucket and no existing ${ENV_PATH} fallback' in content
