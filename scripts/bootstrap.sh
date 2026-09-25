@@ -271,11 +271,14 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
     VENV_MAJOR="${VENV_VERSION%%.*}"
     VENV_MINOR="${VENV_VERSION#*.}"
     VENV_MINOR="${VENV_MINOR%%.*}"
+    case "${VENV_MAJOR}:${VENV_MINOR}" in
+      (*[!0-9:]*|:|*::*) VENV_MAJOR=""; VENV_MINOR="" ;;
+    esac
   fi
 
   if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
-     { [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
-    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); recreating venv…"
+     { [ "${VENV_MAJOR}" -ne 3 ] || [ "${VENV_MINOR}" -lt 12 ] || [ "${VENV_MINOR}" -gt 12 ]; }; then
+    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (!= 3.12); recreating venv…"
     rm -rf "${APP_ROOT}/.venv"
   fi
 fi
