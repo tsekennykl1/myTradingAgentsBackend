@@ -59,6 +59,9 @@ if [ "$NEED_INSTALL" = true ]; then
     apt-get install -y --no-install-recommends \
       awscli curl unzip python3.12 python3-pip python3.12-venv jq \
       build-essential libpq-dev git
+    if ! command -v pip3.12 >/dev/null 2>&1; then
+      python3.12 -m ensurepip --upgrade
+    fi
   fi
 fi
 
@@ -279,6 +282,8 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
     esac
   fi
 
+  # Pin deploys to Python 3.12 exactly so an older or newer stale venv is
+  # recreated before dependency installation.
   if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
      { [ "${VENV_MAJOR}" -ne 3 ] || [ "${VENV_MINOR}" -lt 12 ] || [ "${VENV_MINOR}" -gt 12 ]; }; then
     echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (!= 3.12); recreating venv…"
