@@ -21,4 +21,6 @@ def test_bootstrap_env_fallback_when_s3_env_missing():
     assert 'mv "${TMP_ENV_PATH}" "${ENV_PATH}"' in content
     assert 'elif [ -f "${ENV_PATH}" ]; then' in content
     assert 'rm -f "${TMP_ENV_PATH}"' in content
-    assert 'Missing .env in S3 config bucket and no existing ${ENV_PATH} fallback' in content
+    assert 'cat > "${ENV_PATH}" <<\'ENV_EOF\'' in content
+    assert 'MCP_ENABLED=0' in content
+    assert 'wrote minimal runtime defaults with MCP disabled' in content
