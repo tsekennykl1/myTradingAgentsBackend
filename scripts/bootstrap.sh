@@ -37,7 +37,7 @@ fi
 
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
-for cmd in unzip python3 pip3 jq git gcc curl; do
+for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
   command -v "$cmd" >/dev/null 2>&1 || { NEED_INSTALL=true; break; }
 done
 
@@ -45,7 +45,7 @@ if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
     dnf install -y --allowerasing \
-      curl unzip python3 python3-pip jq \
+      curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
     apt-get update
@@ -192,23 +192,29 @@ aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" || {
 chmod 600 "${APP_ROOT}/.env"
 
 # ── Python virtual environment and dependencies ──────────────
-# Detect the system Python version so we can recreate the venv when the
-# system interpreter is upgraded (e.g. 3.11 → 3.12).
-SYSTEM_PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-VENV_PY_VER=""
-if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  VENV_PY_VER="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+# tradingagents requires Python >=3.12; always use python3.12 explicitly.
+if ! command -v python3.12 >/dev/null 2>&1; then
+  echo "python3.12 not found after package install" >&2
+  exit 1
+fi
 
-  if [ -n "${VENV_PY_VER}" ] && [ "${VENV_PY_VER}" != "${SYSTEM_PY_VER}" ]; then
-    echo "Existing venv uses Python ${VENV_PY_VER} but system is ${SYSTEM_PY_VER}; recreating venv…"
+VENV_MAJOR=""
+VENV_MINOR=""
+if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
+  VENV_MAJOR="$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(sys.version_info.major)' 2>/dev/null || true)"
+  VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+
+  if [ -n "${VENV_MINOR}" ] && [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; then
+    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); recreating venv…"
     rm -rf "${APP_ROOT}/.venv"
   fi
 fi
 
 if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  python3 -m venv "${APP_ROOT}/.venv" || {
-    echo "Failed to create Python virtual environment (system Python ${SYSTEM_PY_VER})" >&2
+  python3.12 -m venv "${APP_ROOT}/.venv" || {
+    echo "Failed to create Python virtual environment (python3.12)" >&2
     exit 1
   }
 fi
