@@ -41,6 +41,9 @@ NEED_INSTALL=false
 for cmd in unzip python3.12 jq git gcc curl; do
   command -v "$cmd" >/dev/null 2>&1 || { NEED_INSTALL=true; break; }
 done
+if ! python3.12 -m pip --version >/dev/null 2>&1; then
+  NEED_INSTALL=true
+fi
 
 if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
@@ -58,6 +61,10 @@ fi
 
 if ! command -v aws >/dev/null 2>&1; then
   echo "AWS CLI not found after package install" >&2
+  exit 1
+fi
+if ! python3.12 -m pip --version >/dev/null 2>&1; then
+  echo "python3.12 pip not available after package install" >&2
   exit 1
 fi
 # ── ★ PM2 CHANGE — Install Node.js & PM2 ─────────────────────
@@ -271,7 +278,7 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
   # Pin deploys to Python 3.12 exactly so an older or newer stale venv is
   # recreated before dependency installation.
   if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ]; then
-    if [ "${VENV_MAJOR}" -ne 3 ] || [ "${VENV_MINOR}" -lt 12 ] || [ "${VENV_MINOR}" -gt 12 ]; then
+    if [ "${VENV_MAJOR}" -ne 3 ] || [ "${VENV_MINOR}" -ne 12 ]; then
       echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (!= 3.12); recreating venv…"
       rm -rf "${APP_ROOT}/.venv"
     fi
