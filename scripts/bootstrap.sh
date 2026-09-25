@@ -38,7 +38,7 @@ fi
 
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
-for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
+for cmd in unzip python3.12 jq git gcc curl; do
   command -v "$cmd" >/dev/null 2>&1 || { NEED_INSTALL=true; break; }
 done
 
@@ -48,20 +48,11 @@ if [ "$NEED_INSTALL" = true ]; then
     dnf install -y --allowerasing \
       curl unzip python3.12 jq \
       gcc gcc-c++ make libpq-devel git tar
-    if ! command -v pip3.12 >/dev/null 2>&1; then
-      if ! dnf install -y --allowerasing python3.12-pip; then
-        echo "WARNING: dnf could not install python3.12-pip; falling back to ensurepip" >&2
-        python3.12 -m ensurepip --upgrade
-      fi
-    fi
   else
     apt-get update
     apt-get install -y --no-install-recommends \
       awscli curl unzip python3.12 python3-pip python3.12-venv jq \
       build-essential libpq-dev git
-    if ! command -v pip3.12 >/dev/null 2>&1; then
-      python3.12 -m ensurepip --upgrade
-    fi
   fi
 fi
 
@@ -69,11 +60,6 @@ if ! command -v aws >/dev/null 2>&1; then
   echo "AWS CLI not found after package install" >&2
   exit 1
 fi
-if ! command -v pip3.12 >/dev/null 2>&1; then
-  echo "pip3.12 not found after package install" >&2
-  exit 1
-fi
-
 # ── ★ PM2 CHANGE — Install Node.js & PM2 ─────────────────────
 if ! command -v node >/dev/null 2>&1; then
   echo "Installing Node.js…"
@@ -284,10 +270,11 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
 
   # Pin deploys to Python 3.12 exactly so an older or newer stale venv is
   # recreated before dependency installation.
-  if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
-     { [ "${VENV_MAJOR}" -ne 3 ] || [ "${VENV_MINOR}" -lt 12 ] || [ "${VENV_MINOR}" -gt 12 ]; }; then
-    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (!= 3.12); recreating venv…"
-    rm -rf "${APP_ROOT}/.venv"
+  if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ]; then
+    if [ "${VENV_MAJOR}" -ne 3 ] || [ "${VENV_MINOR}" -lt 12 ] || [ "${VENV_MINOR}" -gt 12 ]; then
+      echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (!= 3.12); recreating venv…"
+      rm -rf "${APP_ROOT}/.venv"
+    fi
   fi
 fi
 
