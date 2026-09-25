@@ -37,7 +37,7 @@ fi
 
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
-for cmd in unzip python3.12 pip3 jq git gcc curl; do
+for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
   command -v "$cmd" >/dev/null 2>&1 || { NEED_INSTALL=true; break; }
 done
 
