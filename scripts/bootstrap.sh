@@ -239,10 +239,14 @@ fi
 # ── Pull .env from S3 (never stored in the repo) ─────────────
 # NOTE: PM2 does NOT support systemd's EnvironmentFile=.  The wrapper
 # script start-backend.sh below sources this file before exec-ing uvicorn.
-aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" || {
-  echo "Missing .env in S3 config bucket" >&2
+if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env"; then
+  echo "Loaded .env from s3://${CONFIG_BUCKET}/config/.env"
+elif [ -f "${APP_ROOT}/.env" ]; then
+  echo "WARNING: Missing .env in S3 config bucket; using existing ${APP_ROOT}/.env" >&2
+else
+  echo "Missing .env in S3 config bucket and no existing ${APP_ROOT}/.env fallback" >&2
   exit 1
-}
+fi
 chmod 600 "${APP_ROOT}/.env"
 
 # ── Python virtual environment and dependencies ──────────────
