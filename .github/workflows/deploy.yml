@@ -78,21 +78,35 @@ jobs:
         id: ssm
         run: |
           set -euo pipefail
+          python - <<'PY' > /tmp/ssm-commands.json
+          import base64
+          import json
+          import os
+          import shlex
+          from pathlib import Path
+          
+          bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
+          commands = [
+              "set -euxo pipefail",
+              f"printf '%s\\n' '{bootstrap_b64}' > /tmp/bootstrap.sh.b64",
+              "base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh",
+              "rm -f /tmp/bootstrap.sh.b64",
+              "chmod +x /tmp/bootstrap.sh",
+              # Code and config currently share the same deployment bucket.
+              f"export APP_ROOT={shlex.quote(os.environ['APP_ROOT'])}",
+              f"export CODE_BUCKET={shlex.quote(os.environ['BUCKET'])}",
+              f"export CONFIG_BUCKET={shlex.quote(os.environ['BUCKET'])}",
+              f"export SERVICE_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
+              f"export PM2_APP_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
+              "bash /tmp/bootstrap.sh",
+          ]
+          print(json.dumps({"commands": commands}))
+          PY
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${GITHUB_SHA} (PM2)" \
-            --parameters commands="[
-              \"set -euxo pipefail\",
-              \"export APP_ROOT=${APP_ROOT}\",
-              \"export CODE_BUCKET=${BUCKET}\",
-              \"export CONFIG_BUCKET=${BUCKET}\",
-              \"export SERVICE_NAME=${SERVICE_NAME}\",
-              \"export PM2_APP_NAME=${SERVICE_NAME}\",
-              \"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh\",
-              \"chmod +x /tmp/bootstrap.sh\",
-              \"bash /tmp/bootstrap.sh\"
-            ]" \
+            --parameters "file:///tmp/ssm-commands.json" \
             --query 'Command.CommandId' --output text)
           echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
           echo "SSM command: ${CMD_ID}"
