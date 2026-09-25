@@ -13,6 +13,7 @@
 #     a fresh `pm2 start` is issued — no manual intervention needed.
 #   • The legacy systemd unit (mytradingagents-backend.service) is
 #     detected and removed on the first PM2 deploy.
+#   • Installs and configures the CloudWatch Agent for RAM + disk monitoring.
 set -euxo pipefail
 
 # ── Configuration ─────────────────────────────────────────────
@@ -37,7 +38,7 @@ fi
 
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
-for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
+for cmd in unzip python3 pip3 jq git gcc curl; do
   command -v "$cmd" >/dev/null 2>&1 || { NEED_INSTALL=true; break; }
 done
 
@@ -45,7 +46,7 @@ if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
     dnf install -y --allowerasing \
-      curl unzip python3.12 python3.12-pip jq \
+      curl unzip python3 python3-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
     apt-get update
@@ -81,6 +82,59 @@ fi
 
 PM2_BIN="$(command -v pm2)"
 echo "PM2 $("${PM2_BIN}" --version) at ${PM2_BIN}"
+
+# ── CloudWatch Agent — RAM + disk monitoring ──────────────────
+# Installs the agent on first boot, writes a fresh config on every deploy,
+# and (re)starts the daemon.  Failures here are non-fatal — monitoring
+# should never block a deploy.
+install_cloudwatch_agent() {
+  echo "Setting up CloudWatch Agent…"
+
+  # 1. Install if not already present
+  if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1 \
+     && [ ! -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
+    if [ "${PKG_MGR}" = "dnf" ]; then
+      dnf install -y amazon-cloudwatch-agent
+    else
+      apt-get install -y --no-install-recommends amazon-cloudwatch-agent
+    fi
+  fi
+
+  CW_CTL="/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl"
+  CW_CFG="/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json"
+
+  # 2. Write / overwrite config (idempotent)
+  cat > "${CW_CFG}" <<'CW_EOF'
+{
+  "metrics": {
+    "namespace": "CWAgent",
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent"],
+        "metrics_collection_interval": 60
+      },
+      "disk": {
+        "measurement": ["used_percent"],
+        "metrics_collection_interval": 60,
+        "resources": ["/"]
+      }
+    }
+  }
+}
+CW_EOF
+
+  # 3. (Re)start the agent with the new config
+  "${CW_CTL}" -a fetch-config -m ec2 -c "file:${CW_CFG}" -s
+
+  # 4. Verify
+  if systemctl is-active --quiet amazon-cloudwatch-agent; then
+    echo "CloudWatch Agent is running ✓"
+  else
+    echo "WARNING: CloudWatch Agent failed to start (non-fatal)" >&2
+  fi
+}
+
+install_cloudwatch_agent || echo "WARNING: CloudWatch Agent setup failed — continuing deploy" >&2
 
 # ── ★ PM2 CHANGE — Service user now needs a real home dir ────
 # PM2 stores its state in ~/.pm2/ so we can no longer use --no-create-home.
@@ -192,29 +246,23 @@ aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${APP_ROOT}/.env" || {
 chmod 600 "${APP_ROOT}/.env"
 
 # ── Python virtual environment and dependencies ──────────────
-# tradingagents requires Python >=3.12; always use python3.12 explicitly.
-if ! command -v python3.12 >/dev/null 2>&1; then
-  echo "python3.12 not found after package install" >&2
-  exit 1
-fi
-
-VENV_MAJOR=""
-VENV_MINOR=""
+# Detect the system Python version so we can recreate the venv when the
+# system interpreter is upgraded (e.g. 3.11 → 3.12).
+SYSTEM_PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+VENV_PY_VER=""
 if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  VENV_MAJOR="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(sys.version_info.major)' 2>/dev/null || true)"
-  VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+  VENV_PY_VER="$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
 
-  if [ -n "${VENV_MINOR}" ] && [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; then
-    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); recreating venv…"
+  if [ -n "${VENV_PY_VER}" ] && [ "${VENV_PY_VER}" != "${SYSTEM_PY_VER}" ]; then
+    echo "Existing venv uses Python ${VENV_PY_VER} but system is ${SYSTEM_PY_VER}; recreating venv…"
     rm -rf "${APP_ROOT}/.venv"
   fi
 fi
 
 if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  python3.12 -m venv "${APP_ROOT}/.venv" || {
-    echo "Failed to create Python virtual environment (python3.12)" >&2
+  python3 -m venv "${APP_ROOT}/.venv" || {
+    echo "Failed to create Python virtual environment (system Python ${SYSTEM_PY_VER})" >&2
     exit 1
   }
 fi
@@ -296,6 +344,8 @@ echo "=== PM2 logs (last 60 lines) ==="
 sudo -u "${SVC_USER}" "${PM2_BIN}" logs --nostream --lines 60 || true
 echo "=== nginx status ==="
 systemctl status nginx --no-pager || true
+echo "=== CloudWatch Agent status ==="
+systemctl status amazon-cloudwatch-agent --no-pager || true
 
 # ── Health check loop (up to 150 seconds) ────────────────────
 for i in $(seq 1 30); do
