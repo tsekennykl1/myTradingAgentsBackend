@@ -33,6 +33,8 @@ def test_deploy_workflow_inlines_bootstrap_for_ssm():
     content = workflow.read_text()
 
     assert 'python - <<\'PY\' > /tmp/ssm-commands.json' in content
-    assert 'cat > /tmp/bootstrap.sh <<\'BOOTSTRAP_EOF\'' in content
+    assert 'import base64' in content
+    assert 'base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()' in content
+    assert 'printf \'%s\' \'{bootstrap_b64}\' | base64 -d > /tmp/bootstrap.sh' in content
     assert '--parameters "file:///tmp/ssm-commands.json"' in content
     assert '"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh"' not in content

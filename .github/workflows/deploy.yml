@@ -79,14 +79,15 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY' > /tmp/ssm-commands.json
+          import base64
           import json
           import os
           from pathlib import Path
-
-          bootstrap = Path("scripts/bootstrap.sh").read_text()
+          
+          bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
           commands = [
               "set -euxo pipefail",
-              f"cat > /tmp/bootstrap.sh <<'BOOTSTRAP_EOF'\n{bootstrap}\nBOOTSTRAP_EOF",
+              f"printf '%s' '{bootstrap_b64}' | base64 -d > /tmp/bootstrap.sh",
               "chmod +x /tmp/bootstrap.sh",
               f"export APP_ROOT={os.environ['APP_ROOT']}",
               f"export CODE_BUCKET={os.environ['BUCKET']}",
