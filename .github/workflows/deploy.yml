@@ -1,13 +1,12 @@
-name: Deploy backend to S3 + EC2
+name: Deploy backend to S3 + EC2 (PM2)
 
-# Put this file in the backend repo at: .github/workflows/deploy.yml
-#
-# What it does on every push to main:
-#   1. packages the backend source into backend.zip
-#   2. uploads it to S3 under releases/<commit sha>/backend.zip
-#   3. writes current/release.txt so the instance knows which release is live
-#   4. tells the EC2 instance (via SSM) to re-run the bootstrap script
-#   5. waits for /health to answer before calling the deploy successful
+# ★ PM2 CHANGE — What changed vs. the systemd version:
+#   • The zip now excludes node_modules/ and logs/ in addition to the
+#     previous exclusions (neither should ever be shipped).
+#   • The SSM bootstrap command is identical — bootstrap.sh itself handles
+#     the systemd→PM2 migration and all PM2 setup.
+#   • All other steps are unchanged; the health-check still runs inside
+#     bootstrap.sh and the SSM wait loop picks up success/failure.
 
 on:
   push:
@@ -41,12 +40,14 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
+      # ★ PM2 CHANGE — added node_modules/ and logs/ to exclusion list
       - name: Package backend
         run: |
           set -euo pipefail
           zip -r backend.zip . \
-            -x '.git/*' '.github/*' '.venv/*' '**/__pycache__/*' '*.pyc' \
-               'data/*' 'artifacts/*' '.env'
+            -x '.git/*' '.github/*' '.venv/*' 'node_modules/*' \
+               '**/__pycache__/*' '*.pyc' \
+               'data/*' 'artifacts/*' 'logs/*' '.env'
           unzip -l backend.zip | tail -n 5
 
       - name: Upload release to S3
@@ -80,13 +81,14 @@ jobs:
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploy ${GITHUB_SHA}" \
+            --comment "Deploy ${GITHUB_SHA} (PM2)" \
             --parameters commands="[
               \"set -euxo pipefail\",
               \"export APP_ROOT=${APP_ROOT}\",
               \"export CODE_BUCKET=${BUCKET}\",
               \"export CONFIG_BUCKET=${BUCKET}\",
               \"export SERVICE_NAME=${SERVICE_NAME}\",
+              \"export PM2_APP_NAME=${SERVICE_NAME}\",
               \"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh\",
               \"chmod +x /tmp/bootstrap.sh\",
               \"bash /tmp/bootstrap.sh\"
@@ -99,6 +101,8 @@ jobs:
         run: |
           set -euo pipefail
           CMD_ID="${{ steps.ssm.outputs.command_id }}"
+          FAILED=0
+          STATUS="Unknown"
           for i in $(seq 1 60); do
             STATUS=$(aws ssm list-command-invocations \
               --command-id "${CMD_ID}" --details \
@@ -112,6 +116,6 @@ jobs:
           done
           aws ssm list-command-invocations --command-id "${CMD_ID}" --details \
             --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text || true
-          if [ "${FAILED:-0}" = "1" ] || [ "${STATUS}" != "Success" ]; then
+          if [ "${FAILED}" = "1" ] || [ "${STATUS}" != "Success" ]; then
             exit 1
           fi

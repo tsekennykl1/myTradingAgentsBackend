@@ -449,58 +449,104 @@ def _coerce_max_debate_rounds(research_depth: str | None) -> int:
     return 1
 
 
+# ---------------------------------------------------------------------------
+# Change 1: v0.4.0 LLMProvider-aware provider normalisation
+# ---------------------------------------------------------------------------
+
 def _normalize_provider(value: str | None) -> str:
+    """Map backend provider names to v0.4.0 LLMProvider literals."""
     raw = str(value or "").strip().lower()
     if not raw:
         return "openai"
 
     mapping = {
+        # Direct matches to v0.4.0 LLMProvider
         "openai": "openai",
-        "deepseek": "deepseek",
         "anthropic": "anthropic",
-        "google": "google",
+        "google": "google_genai",
+        "google_genai": "google_genai",
         "xai": "xai",
-        "groq": "groq",
-        "ollama": "ollama",
-        "azure": "azure",
+        "huggingface": "huggingface",
         "openrouter": "openrouter",
-        "qwen": "qwen",
-        "glm": "glm",
-        "minimax": "minimax",
+        "ollama": "ollama",
+        "litellm": "litellm",
+        # Providers that v0.4.0 routes through litellm
+        "deepseek": "litellm",
+        "groq": "litellm",
+        "azure": "litellm",
+        "azure_openai": "litellm",
+        "bedrock": "litellm",
+        "openai_compatible": "litellm",
+        "qwen": "litellm",
+        "qwen_cn": "litellm",
+        "glm": "litellm",
+        "glm_cn": "litellm",
+        "minimax": "litellm",
+        "minimax_cn": "litellm",
     }
     return mapping.get(raw, raw)
 
 
-def _build_tradingagents_config(config: dict[str, Any]) -> dict[str, Any]:
-    default_config_module = _import_module("tradingagents.default_config")
-    default_config = getattr(default_config_module, "DEFAULT_CONFIG").copy()
+# ---------------------------------------------------------------------------
+# Change 2: v0.4.0 ResponseLanguage-aware language normalisation
+# ---------------------------------------------------------------------------
+
+def _normalize_language(value: str | None) -> str:
+    """Map human-readable language names to BCP 47 ResponseLanguage codes for v0.4.0."""
+    raw = str(value or "").strip().lower()
+    mapping = {
+        "english": "en-US",
+        "en": "en-US",
+        "en-us": "en-US",
+        "traditional chinese": "zh-TW",
+        "chinese (traditional)": "zh-TW",
+        "zh-tw": "zh-TW",
+        "simplified chinese": "zh-CN",
+        "chinese (simplified)": "zh-CN",
+        "chinese": "zh-CN",
+        "zh-cn": "zh-CN",
+        "japanese": "ja-JP",
+        "ja-jp": "ja-JP",
+        "korean": "ko-KR",
+        "ko-kr": "ko-KR",
+        "german": "de-DE",
+        "de-de": "de-DE",
+    }
+    return mapping.get(raw, "en-US")
+
+
+# ---------------------------------------------------------------------------
+# Change 3: build a TradingAgentsConfig Pydantic model instead of mutating
+#            the deleted tradingagents.default_config.DEFAULT_CONFIG dict
+# ---------------------------------------------------------------------------
+
+def _build_tradingagents_config(config: dict[str, Any]) -> Any:
+    """Build a TradingAgentsConfig (Pydantic model) for tradingagents >= v0.4.0.
+
+    Returns a TradingAgentsConfig instance, not a dict.  Callers that
+    previously used .get() on the return value must use attribute access.
+    """
+    from tradingagents.config import TradingAgentsConfig
 
     params = config.get("params") if isinstance(config.get("params"), dict) else {}
 
-    provider = params.get("llm_provider") or config.get("provider")
-    quick_model = params.get("quick_think_llm") or config.get("quickModel")
-    deep_model = params.get("deep_think_llm") or config.get("deepModel")
-    research_depth = params.get("research_depth") or config.get("researchDepth")
-    language = params.get("language") or config.get("language")
+    provider = params.get("llm_provider") or config.get("provider") or "openai"
+    quick_model = params.get("quick_think_llm") or config.get("quickModel") or "gpt-4o-mini"
+    deep_model = params.get("deep_think_llm") or config.get("deepModel") or "gpt-4o"
+    research_depth = params.get("research_depth") or config.get("researchDepth") or "Shallow"
+    language = params.get("language") or config.get("language") or "English"
 
-    default_config["llm_provider"] = _normalize_provider(provider)
-
-    if quick_model:
-        default_config["quick_think_llm"] = str(quick_model).strip()
-
-    if deep_model:
-        default_config["deep_think_llm"] = str(deep_model).strip()
-
-    default_config["max_debate_rounds"] = _coerce_max_debate_rounds(research_depth)
-    # Risk debate is 3 agents per round; one round is enough below "Deep".
-    default_config["max_risk_discuss_rounds"] = (
-        2 if str(research_depth or "").strip().lower() == "deep" else 1
+    return TradingAgentsConfig(
+        llm_provider=_normalize_provider(provider),
+        quick_think_llm=str(quick_model).strip() or "gpt-4o-mini",
+        deep_think_llm=str(deep_model).strip() or "gpt-4o",
+        max_debate_rounds=_coerce_max_debate_rounds(research_depth),
+        max_risk_discuss_rounds=(
+            2 if str(research_depth or "").strip().lower() == "deep" else 1
+        ),
+        max_recur_limit=50,
+        response_language=_normalize_language(language),
     )
-
-    if language:
-        default_config["output_language"] = str(language).strip()
-
-    return default_config
 
 
 def _normalize_decision_payload(decision: Any) -> dict[str, Any]:
@@ -600,6 +646,10 @@ def _detect_asset_type(ticker: str) -> str:
     return "stock"
 
 
+# ---------------------------------------------------------------------------
+# Change 4: ta_config is now a Pydantic model — use attribute access, not .get()
+# ---------------------------------------------------------------------------
+
 def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Callable[[str, Any], None]] = None, on_stage: Optional[Callable[[str, str], None]] = None) -> dict[str, Any]:
     ta_config = _build_tradingagents_config(config)
     selected_analysts = _map_analysts_to_selected(config.get("analysts"))
@@ -619,10 +669,10 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
         f"ticker={ticker} "
         f"analysis_date={analysis_date} "
         f"asset_type={asset_type} "
-        f"provider={ta_config.get('llm_provider')} "
-        f"quick={ta_config.get('quick_think_llm')} "
-        f"deep={ta_config.get('deep_think_llm')} "
-        f"max_debate_rounds={ta_config.get('max_debate_rounds')} "
+        f"provider={ta_config.llm_provider} "
+        f"quick={ta_config.quick_think_llm} "
+        f"deep={ta_config.deep_think_llm} "
+        f"max_debate_rounds={ta_config.max_debate_rounds} "
         f"selected_analysts={selected_analysts}",
         flush=True,
     )
