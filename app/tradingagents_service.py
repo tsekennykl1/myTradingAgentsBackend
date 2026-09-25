@@ -756,7 +756,7 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
     stream = getattr(stream_graph, "stream", None)
     propagator = getattr(graph, "propagator", None)
     if on_update and callable(stream) and propagator is not None:
-        init_state = propagator.create_initial_state(ticker, analysis_date, asset_type=asset_type)
+        init_state = fast_path.create_initial_state_compat(propagator, ticker, analysis_date, asset_type=asset_type)
         args = propagator.get_graph_args()
         final_state: dict[str, Any] = {}
         for chunk in stream(init_state, **args):

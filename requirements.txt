@@ -20,8 +20,9 @@ plotly>=5.24.1
 matplotlib>=3.9.2
 kaleido>=0.2.1
 
-# Upstream agent framework (available on PyPI; no git clone needed)
-tradingagents==0.4.0
+# Upstream agent framework. Install from GitHub: the PyPI package named
+# 'tradingagents' is an unrelated fork whose Propagator lacks asset_type.
+tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@v0.4.0
 
 # Tests (needed to run tests/ with pytest)
 pytest>=8.3.0

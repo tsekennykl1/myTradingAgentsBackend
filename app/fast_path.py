@@ -308,7 +308,8 @@ def run_analysts_in_parallel(
         except Exception as exc:  # identity resolution is best-effort
             print(f"[fast_path] instrument context unavailable: {exc}", flush=True)
 
-    base_state = graph.propagator.create_initial_state(
+    base_state = create_initial_state_compat(
+        graph.propagator,
         ticker,
         analysis_date,
         asset_type=asset_type,
@@ -382,3 +383,20 @@ def run_analysts_in_parallel(
         print(f"[fast_path] publish warnings: {' | '.join(errors)}", flush=True)
 
     return final_state, final_state.get("final_trade_decision")
+
+
+def create_initial_state_compat(propagator, ticker, analysis_date, **extra):
+    """Call propagator.create_initial_state, dropping keyword arguments the
+    installed TradingAgents version does not accept (e.g. asset_type)."""
+    import inspect
+    fn = propagator.create_initial_state
+    try:
+        params = inspect.signature(fn).parameters
+        if not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+            extra = {k: v for k, v in extra.items() if k in params}
+    except (TypeError, ValueError):
+        pass
+    try:
+        return fn(ticker, analysis_date, **extra)
+    except TypeError:
+        return fn(ticker, analysis_date)
