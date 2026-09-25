@@ -82,24 +82,23 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY' > /tmp/ssm-commands.json
+          import base64
           import json
           import os
           import shlex
+          from pathlib import Path
 
-          # Download bootstrap.sh from S3 (already uploaded in the previous step).
-          # Inlining via base64 exceeds the 16 KB per-command SSM limit when the
-          # script grows beyond ~12 KB; fetching from S3 avoids that constraint.
-          # CODE_BUCKET is exported first so the S3 download command can reference
-          # it as a shell variable, keeping the URI free of Python quoting concerns.
+          bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
+
           commands = [
               "set -euxo pipefail",
-              # Code and config currently share the same deployment bucket.
               f"export APP_ROOT={shlex.quote(os.environ['APP_ROOT'])}",
               f"export CODE_BUCKET={shlex.quote(os.environ['BUCKET'])}",
               f"export CONFIG_BUCKET={shlex.quote(os.environ['BUCKET'])}",
               f"export SERVICE_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
               f"export PM2_APP_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
-              'aws s3 cp "s3://${CODE_BUCKET}/scripts/bootstrap.sh" /tmp/bootstrap.sh',
+              rf"printf '%s\\n' '{bootstrap_b64}' > /tmp/bootstrap.sh.b64",
+              "base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh",
               "chmod +x /tmp/bootstrap.sh",
               "bash /tmp/bootstrap.sh",
           ]
