@@ -78,21 +78,30 @@ jobs:
         id: ssm
         run: |
           set -euo pipefail
+          python - <<'PY' > /tmp/ssm-commands.json
+          import json
+          import os
+          from pathlib import Path
+
+          bootstrap = Path("scripts/bootstrap.sh").read_text()
+          commands = [
+              "set -euxo pipefail",
+              f"cat > /tmp/bootstrap.sh <<'BOOTSTRAP_EOF'\n{bootstrap}\nBOOTSTRAP_EOF",
+              "chmod +x /tmp/bootstrap.sh",
+              f"export APP_ROOT={os.environ['APP_ROOT']}",
+              f"export CODE_BUCKET={os.environ['BUCKET']}",
+              f"export CONFIG_BUCKET={os.environ['BUCKET']}",
+              f"export SERVICE_NAME={os.environ['SERVICE_NAME']}",
+              f"export PM2_APP_NAME={os.environ['SERVICE_NAME']}",
+              "bash /tmp/bootstrap.sh",
+          ]
+          print(json.dumps({"commands": commands}))
+          PY
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${GITHUB_SHA} (PM2)" \
-            --parameters commands="[
-              \"set -euxo pipefail\",
-              \"export APP_ROOT=${APP_ROOT}\",
-              \"export CODE_BUCKET=${BUCKET}\",
-              \"export CONFIG_BUCKET=${BUCKET}\",
-              \"export SERVICE_NAME=${SERVICE_NAME}\",
-              \"export PM2_APP_NAME=${SERVICE_NAME}\",
-              \"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh\",
-              \"chmod +x /tmp/bootstrap.sh\",
-              \"bash /tmp/bootstrap.sh\"
-            ]" \
+            --parameters "file:///tmp/ssm-commands.json" \
             --query 'Command.CommandId' --output text)
           echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
           echo "SSM command: ${CMD_ID}"

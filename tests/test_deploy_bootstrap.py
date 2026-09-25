@@ -26,3 +26,13 @@ def test_bootstrap_env_fallback_when_s3_env_missing():
     assert 'wrote minimal runtime defaults with MCP disabled' in content
     assert 'Provider-backed analysis stays unavailable until a real .env is uploaded.' in content
     assert 'chmod 600 "${ENV_PATH}"' in content
+
+
+def test_deploy_workflow_inlines_bootstrap_for_ssm():
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy.yml"
+    content = workflow.read_text()
+
+    assert 'python - <<\'PY\' > /tmp/ssm-commands.json' in content
+    assert 'cat > /tmp/bootstrap.sh <<\'BOOTSTRAP_EOF\'' in content
+    assert '--parameters "file:///tmp/ssm-commands.json"' in content
+    assert '"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh"' not in content
