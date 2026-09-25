@@ -241,8 +241,10 @@ fi
 # script start-backend.sh below sources this file before exec-ing uvicorn.
 ENV_PATH="${APP_ROOT}/.env"
 TMP_ENV_PATH="/tmp/deploy-env.$$"
+ENV_FROM_S3=0
 if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${TMP_ENV_PATH}"; then
   mv "${TMP_ENV_PATH}" "${ENV_PATH}"
+  ENV_FROM_S3=1
   echo "Loaded .env from s3://${CONFIG_BUCKET}/config/.env"
 elif [ -f "${ENV_PATH}" ]; then
   rm -f "${TMP_ENV_PATH}"
@@ -252,7 +254,9 @@ else
   echo "Missing .env in S3 config bucket and no existing ${ENV_PATH} fallback" >&2
   exit 1
 fi
-chmod 600 "${ENV_PATH}"
+if [ "${ENV_FROM_S3}" = "1" ]; then
+  chmod 600 "${ENV_PATH}"
+fi
 
 # ── Python virtual environment and dependencies ──────────────
 # tradingagents requires Python >=3.12; always use python3.12 explicitly.
