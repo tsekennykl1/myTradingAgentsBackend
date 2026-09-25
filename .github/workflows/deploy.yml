@@ -82,18 +82,21 @@ jobs:
           import base64
           import json
           import os
+          import shlex
           from pathlib import Path
           
           bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
           commands = [
               "set -euxo pipefail",
-              f"printf '%s' '{bootstrap_b64}' | base64 -d > /tmp/bootstrap.sh",
+              f"cat > /tmp/bootstrap.sh.b64 <<'__BOOTSTRAP_B64_EOF__'\n{bootstrap_b64}\n__BOOTSTRAP_B64_EOF__",
+              "base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh",
+              "rm -f /tmp/bootstrap.sh.b64",
               "chmod +x /tmp/bootstrap.sh",
-              f"export APP_ROOT={os.environ['APP_ROOT']}",
-              f"export CODE_BUCKET={os.environ['BUCKET']}",
-              f"export CONFIG_BUCKET={os.environ['BUCKET']}",
-              f"export SERVICE_NAME={os.environ['SERVICE_NAME']}",
-              f"export PM2_APP_NAME={os.environ['SERVICE_NAME']}",
+              f"export APP_ROOT={shlex.quote(os.environ['APP_ROOT'])}",
+              f"export CODE_BUCKET={shlex.quote(os.environ['BUCKET'])}",
+              f"export CONFIG_BUCKET={shlex.quote(os.environ['BUCKET'])}",
+              f"export SERVICE_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
+              f"export PM2_APP_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
               "bash /tmp/bootstrap.sh",
           ]
           print(json.dumps({"commands": commands}))
