@@ -36,7 +36,9 @@ def test_deploy_workflow_inlines_bootstrap_for_ssm():
     assert 'import base64' in content
     assert 'import shlex' in content
     assert 'base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()' in content
-    assert 'printf \'%s\\\\n\' \'{bootstrap_b64}\' > /tmp/bootstrap.sh.b64' in content
+    assert 'bootstrap_b64[i:i + 900] for i in range(0, len(bootstrap_b64), 900)' in content
+    assert ': > /tmp/bootstrap.sh.b64' in content
+    assert 'f"printf \'%s\' \'{chunk}\' >> /tmp/bootstrap.sh.b64"' in content
     assert 'base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh' in content
     assert 'f"export APP_ROOT={shlex.quote(os.environ[\'APP_ROOT\'])}"' in content
     assert '--parameters "file:///tmp/ssm-commands.json"' in content

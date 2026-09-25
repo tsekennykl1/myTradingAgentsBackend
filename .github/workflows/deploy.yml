@@ -86,9 +86,16 @@ jobs:
           from pathlib import Path
           
           bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
+          bootstrap_chunks = [
+              bootstrap_b64[i:i + 900] for i in range(0, len(bootstrap_b64), 900)
+          ]
           commands = [
               "set -euxo pipefail",
-              f"printf '%s\\n' '{bootstrap_b64}' > /tmp/bootstrap.sh.b64",
+              ": > /tmp/bootstrap.sh.b64",
+              *[
+                  f"printf '%s' '{chunk}' >> /tmp/bootstrap.sh.b64"
+                  for chunk in bootstrap_chunks
+              ],
               "base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh",
               "rm -f /tmp/bootstrap.sh.b64",
               "chmod +x /tmp/bootstrap.sh",
