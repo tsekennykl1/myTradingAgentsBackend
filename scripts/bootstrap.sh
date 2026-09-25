@@ -46,7 +46,7 @@ if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
     dnf install -y --allowerasing \
-      curl unzip python3.12 jq \
+      curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
     apt-get update
