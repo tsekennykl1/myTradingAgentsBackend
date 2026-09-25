@@ -271,8 +271,11 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
     VENV_MAJOR="${VENV_VERSION%%.*}"
     VENV_MINOR="${VENV_VERSION#*.}"
     VENV_MINOR="${VENV_MINOR%%.*}"
-    case "${VENV_MAJOR}:${VENV_MINOR}" in
-      (*[!0-9:]*|:|*::*) VENV_MAJOR=""; VENV_MINOR="" ;;
+    case "${VENV_MAJOR}" in
+      (''|*[!0-9]*) VENV_MAJOR=""; VENV_MINOR="" ;;
+    esac
+    case "${VENV_MINOR}" in
+      (''|*[!0-9]*) VENV_MAJOR=""; VENV_MINOR="" ;;
     esac
   fi
 
