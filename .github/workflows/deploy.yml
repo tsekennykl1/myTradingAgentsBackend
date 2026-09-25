@@ -88,10 +88,11 @@ jobs:
           bootstrap_b64 = base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()
           commands = [
               "set -euxo pipefail",
-              f"cat > /tmp/bootstrap.sh.b64 <<'__BOOTSTRAP_B64_EOF__'\n{bootstrap_b64}\n__BOOTSTRAP_B64_EOF__",
+              f"printf '%s\\n' '{bootstrap_b64}' > /tmp/bootstrap.sh.b64",
               "base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh",
               "rm -f /tmp/bootstrap.sh.b64",
               "chmod +x /tmp/bootstrap.sh",
+              # Code and config currently share the same deployment bucket.
               f"export APP_ROOT={shlex.quote(os.environ['APP_ROOT'])}",
               f"export CODE_BUCKET={shlex.quote(os.environ['BUCKET'])}",
               f"export CONFIG_BUCKET={shlex.quote(os.environ['BUCKET'])}",
