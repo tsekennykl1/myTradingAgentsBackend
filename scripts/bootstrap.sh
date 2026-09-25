@@ -255,10 +255,12 @@ fi
 VENV_MAJOR=""
 VENV_MINOR=""
 if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  VENV_MAJOR="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(sys.version_info.major)' 2>/dev/null || true)"
-  VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
-    'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
+  VENV_VERSION="$("${APP_ROOT}/.venv/bin/python3" -c \
+    'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
+  if [ -n "${VENV_VERSION}" ]; then
+    VENV_MAJOR="${VENV_VERSION%%.*}"
+    VENV_MINOR="${VENV_VERSION#*.}"
+  fi
 
   if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
      { [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
