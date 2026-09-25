@@ -25,3 +25,4 @@ def test_bootstrap_env_fallback_when_s3_env_missing():
     assert 'MCP_ENABLED=0' in content
     assert 'wrote minimal runtime defaults with MCP disabled' in content
     assert 'Provider-backed analysis stays unavailable until a real .env is uploaded.' in content
+    assert 'chmod 600 "${ENV_PATH}"' in content
