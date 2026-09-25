@@ -260,6 +260,7 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
   if [ -n "${VENV_VERSION}" ]; then
     VENV_MAJOR="${VENV_VERSION%%.*}"
     VENV_MINOR="${VENV_VERSION#*.}"
+    VENV_MINOR="${VENV_MINOR%%.*}"
   fi
 
   if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
