@@ -49,7 +49,10 @@ if [ "$NEED_INSTALL" = true ]; then
       curl unzip python3.12 jq \
       gcc gcc-c++ make libpq-devel git tar
     if ! command -v pip3.12 >/dev/null 2>&1; then
-      dnf install -y --allowerasing python3.12-pip || python3.12 -m ensurepip --upgrade
+      if ! dnf install -y --allowerasing python3.12-pip; then
+        echo "WARNING: dnf could not install python3.12-pip; falling back to ensurepip" >&2
+        python3.12 -m ensurepip --upgrade
+      fi
     fi
   else
     apt-get update
