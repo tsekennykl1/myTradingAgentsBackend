@@ -46,8 +46,11 @@ if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
     dnf install -y --allowerasing \
-      curl unzip python3.12 python3.12-pip jq \
+      curl unzip python3.12 jq \
       gcc gcc-c++ make libpq-devel git tar
+    if ! command -v pip3.12 >/dev/null 2>&1; then
+      dnf install -y --allowerasing python3.12-pip || python3.12 -m ensurepip --upgrade
+    fi
   else
     apt-get update
     apt-get install -y --no-install-recommends \
@@ -58,6 +61,10 @@ fi
 
 if ! command -v aws >/dev/null 2>&1; then
   echo "AWS CLI not found after package install" >&2
+  exit 1
+fi
+if ! command -v pip3.12 >/dev/null 2>&1; then
+  echo "pip3.12 not found after package install" >&2
   exit 1
 fi
 
