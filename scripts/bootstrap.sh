@@ -260,7 +260,8 @@ if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
   VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
     'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
 
-  if [ -n "${VENV_MINOR}" ] && [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; then
+  if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
+     { [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
     echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); recreating venv…"
     rm -rf "${APP_ROOT}/.venv"
   fi
