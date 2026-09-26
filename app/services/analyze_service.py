@@ -476,6 +476,28 @@ def _append_log(
     _update_run(run_id, logs=_trim_logs(logs))
 
 
+# ── FIX (Change A): Lease extension to prevent double-run ─────
+def _extend_lease(run_id: str, lease_seconds: int = 600) -> None:
+    """Push the lease expiry forward so no other worker reclaims this run."""
+    with _DB_LOCK:
+        conn = _get_conn()
+        try:
+            now = datetime.now(UTC)
+            conn.execute(
+                "UPDATE runs SET lease_expires_at = ?, last_heartbeat_at = ?, updated_at = ? "
+                "WHERE run_id = ? AND completed_at IS NULL",
+                (
+                    (now + timedelta(seconds=lease_seconds)).isoformat(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    run_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def _set_progress(
     run_id: str,
     *,
@@ -631,30 +653,54 @@ def get_run_status(run_id: str) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
+# ── FIX (Change B): Staleness guard prevents double-run ───────
 def claim_next_run(worker_id: str, lease_seconds: int = 120) -> Optional[str]:
     _init_db()
     now = datetime.now(UTC)
     now_s = now.isoformat()
     lease_s = (now + timedelta(seconds=lease_seconds)).isoformat()
+    # An expired lease is only reclaimable when the run also looks stale —
+    # a working worker continuously bumps updated_at through _update_run,
+    # publish_report, and _extend_lease.  120 s covers the longest gap
+    # between progress updates during an engine call.
+    stale_cutoff = (now - timedelta(seconds=120)).isoformat()
     with _DB_LOCK:
         conn = _get_conn()
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                """SELECT run_id FROM runs WHERE completed_at IS NULL AND cancel_requested = 0
-                   AND (status = 'queued' OR lease_expires_at < ?)
-                   AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-                   ORDER BY created_at LIMIT 1""", (now_s, now_s)
+                """SELECT run_id FROM runs
+                   WHERE completed_at IS NULL
+                     AND cancel_requested = 0
+                     AND (
+                         status = 'queued'
+                         OR (lease_expires_at IS NOT NULL
+                             AND lease_expires_at < ?
+                             AND updated_at < ?)
+                     )
+                     AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+                   ORDER BY created_at
+                   LIMIT 1""",
+                (now_s, stale_cutoff, now_s),
             ).fetchone()
             if not row:
-                conn.commit(); return None
+                conn.commit()
+                return None
             run_id = row["run_id"]
             conn.execute(
-                """UPDATE runs SET status='initializing', lease_owner=?, lease_expires_at=?,
-                   last_heartbeat_at=?, attempt_count=attempt_count+1, updated_at=?, version=version+1
-                   WHERE run_id=?""", (worker_id, lease_s, now_s, now_s, run_id)
+                """UPDATE runs
+                   SET status = 'initializing',
+                       lease_owner = ?,
+                       lease_expires_at = ?,
+                       last_heartbeat_at = ?,
+                       attempt_count = attempt_count + 1,
+                       updated_at = ?,
+                       version = version + 1
+                   WHERE run_id = ?""",
+                (worker_id, lease_s, now_s, now_s, run_id),
             )
-            conn.commit(); return run_id
+            conn.commit()
+            return run_id
         finally:
             conn.close()
 
@@ -1379,6 +1425,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=1500,
         )
+        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
         _append_log(run_id, f"Downloading market data for {ticker}.")
 
         try:
@@ -1443,6 +1490,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=1500,
         )
+        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
         _append_log(run_id, "Building price chart artifacts.")
 
         if df is not None and not df.empty:
@@ -1502,6 +1550,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=2000,
         )
+        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
         _append_log(run_id, "Preparing TradingAgents engine adapter.")
 
         if not engine_available():
@@ -1525,6 +1574,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=5000,
         )
+        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
         _append_log(run_id, "Calling TradingAgents engine adapter.")
         _increment_counter(run_id, "engine_calls_count", 1)
 
@@ -1559,6 +1609,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=1500,
         )
+        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
 
         result = _normalize_run_tradingagents_output(
             engine_result=engine_result,

@@ -7,12 +7,18 @@
 # debugging sessions:
 #   • .env ownership/permissions fixed every deploy (the service user must be
 #     able to read it — fixes "Permission denied: '.env'").
+#     ★ NEW: deploy user (ec2-user) added to the service group so it can also
+#     read .env without world-readable (mode 640 instead of 600).
 #   • TRADINGAGENTS_* model names auto-corrected to the litellm prefixed
 #     format (deepseek/deepseek-reasoner, deepseek/deepseek-chat) — fixes
 #     "LLM Provider NOT provided" errors from unprefixed deepseek-v4-* names.
 #   • SSM Agent verified running so deploy.yml's SendCommand never stalls.
 #   • Legacy systemd unit (mytradingagents-backend.service) removed on the
 #     first PM2 deploy so it can never fight PM2 for port 8000.
+#   • ★ NEW (Fix 4): yfinance >= 1.5 verified after pip install — rejects
+#     old wheels that still carry the HTTP 401 "Invalid Crumb" bug.
+#   • ★ NEW (Fix 5): tradingagents package installed from GitHub (pinned tag)
+#     after requirements.txt so the correct engine version is always present.
 # Idempotent — safe to re-run.
 set -euxo pipefail
 
@@ -24,6 +30,17 @@ SERVICE_NAME="${SERVICE_NAME:-mytradingagents-backend}"        # legacy name
 PM2_APP_NAME="${PM2_APP_NAME:-mytradingagents-backend}"        # PM2 process name
 RELEASE_FILE="${RELEASE_FILE:-current/release.txt}"
 SVC_USER="${SVC_USER:-mytradingagents}"
+
+# ★ NEW — deploy / SSH user who also needs to read .env for debugging
+DEPLOY_USER="${DEPLOY_USER:-ec2-user}"
+
+# ★ NEW — TradingAgents engine: pinned Git repo + tag
+TA_REPO="${TA_REPO:-https://github.com/TauricResearch/TradingAgents.git}"
+TA_TAG="${TA_TAG:-v0.4.0}"
+
+# ★ NEW — yfinance minimum version (crumb/cookie auth rewrite)
+MIN_YF_MAJOR=1
+MIN_YF_MINOR=5
 
 # ── Detect package manager (AL2023 = dnf, Ubuntu = apt-get) ──
 if command -v dnf >/dev/null 2>&1; then
@@ -164,6 +181,20 @@ elif [ ! -d "/home/${SVC_USER}" ]; then
 fi
 SVC_HOME="/home/${SVC_USER}"
 
+# ★ NEW — Give the deploy user (ec2-user) read access to .env and logs
+#   by adding it to the service user's primary group.  This replaces the
+#   manual "sudo chmod 644 .env / chown ec2-user .env" hotfix with a
+#   durable, least-privilege solution (group-readable 640 instead of
+#   world-readable 644).
+if id "${DEPLOY_USER}" >/dev/null 2>&1; then
+  if ! id -nG "${DEPLOY_USER}" | grep -qw "${SVC_USER}"; then
+    usermod -aG "${SVC_USER}" "${DEPLOY_USER}"
+    echo "Added ${DEPLOY_USER} to group ${SVC_USER} ✓"
+  else
+    echo "${DEPLOY_USER} already in group ${SVC_USER} ✓"
+  fi
+fi
+
 # ── Migrate: remove legacy systemd unit ───────────────────────
 # On the first PM2 deploy, the old raw-uvicorn unit may still be present.
 # Stop it, disable it, and delete the file so it never fights PM2 for
@@ -286,8 +317,10 @@ sed -i \
 
 # 2. Ownership/permissions: the service user must be able to READ .env.
 #    Fixes "Permission denied: '.env'" when the file was created with sudo/root.
+# ★ NEW — mode 640 (was 600) so DEPLOY_USER (now in the SVC_USER group)
+#   can also read .env for debugging without needing world-readable 644.
 chown "${SVC_USER}:${SVC_USER}" "${ENV_PATH}"
-chmod 600 "${ENV_PATH}"
+chmod 640 "${ENV_PATH}"
 
 # ── Python virtual environment and dependencies ──────────────
 # tradingagents requires Python >=3.12; always use python3.12 explicitly.
@@ -320,6 +353,43 @@ fi
 
 "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
 "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
+
+# ★ NEW (Fix 5) — Install tradingagents from GitHub (pinned tag) ─────
+#   The PyPI package either doesn't exist or lags behind the GitHub repo.
+#   Installed AFTER requirements.txt so it wins over any transitive dep.
+#   Bump TA_TAG (e.g. to v0.5.0) via env var — no code edit required.
+echo "Installing tradingagents from ${TA_REPO} @ ${TA_TAG} …"
+"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
+  "tradingagents @ git+${TA_REPO}@${TA_TAG}"
+
+TA_VERSION=$("${APP_ROOT}/.venv/bin/pip" show tradingagents 2>/dev/null \
+  | grep -i '^Version:' | awk '{print $2}' || echo "unknown")
+echo "tradingagents ${TA_VERSION} installed ✓"
+
+# ★ NEW (Fix 4) — Verify yfinance version ────────────────────────────
+#   requirements.txt pins >=1.5 but a stale pip cache could still serve
+#   an old wheel.  Hard-fail the deploy so the 401 bug never ships.
+echo "Verifying yfinance version …"
+YF_VERSION=$("${APP_ROOT}/.venv/bin/pip" show yfinance 2>/dev/null \
+  | grep -i '^Version:' | awk '{print $2}')
+
+if [ -z "${YF_VERSION}" ]; then
+  echo "yfinance is not installed — something went wrong." >&2
+  exit 1
+fi
+
+YF_MAJOR=$(echo "${YF_VERSION}" | cut -d. -f1)
+YF_MINOR=$(echo "${YF_VERSION}" | cut -d. -f2)
+
+if [ "${YF_MAJOR}" -lt "${MIN_YF_MAJOR}" ] || \
+   { [ "${YF_MAJOR}" -eq "${MIN_YF_MAJOR}" ] && [ "${YF_MINOR}" -lt "${MIN_YF_MINOR}" ]; }; then
+  echo "yfinance ${YF_VERSION} is too old (need >= ${MIN_YF_MAJOR}.${MIN_YF_MINOR})." >&2
+  echo "The 401 'Invalid Crumb' bug is present in older releases." >&2
+  echo "Try:  pip install --upgrade --no-cache-dir yfinance" >&2
+  exit 1
+fi
+
+echo "yfinance ${YF_VERSION} ✓ (>= ${MIN_YF_MAJOR}.${MIN_YF_MINOR}, crumb fix included)"
 
 # ── Start wrapper script ──────────────────────────────────────
 # This replaces systemd's EnvironmentFile= + ExecStart=.
@@ -393,6 +463,10 @@ echo "=== PM2 process list ==="
 sudo -u "${SVC_USER}" "${PM2_BIN}" list
 echo "=== PM2 logs (last 60 lines) ==="
 sudo -u "${SVC_USER}" "${PM2_BIN}" logs --nostream --lines 60 || true
+# ★ NEW — print installed package versions for deploy audit trail
+echo "=== Key Python packages ==="
+"${APP_ROOT}/.venv/bin/pip" show yfinance tradingagents 2>/dev/null \
+  | grep -E '^(Name|Version):' || true
 echo "=== nginx status ==="
 systemctl status nginx --no-pager || true
 echo "=== CloudWatch Agent status ==="

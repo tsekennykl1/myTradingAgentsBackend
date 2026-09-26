@@ -1,29 +1,40 @@
-# Core API
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.7.0
-python-dotenv>=1.0.1
+# ─── Core Framework ───────────────────────────────────────────
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
 
-# MCP server
-mcp>=1.26.0,<2
+# ─── Market Data ──────────────────────────────────────────────
+# ★ NEW (Fix 4) — yfinance >=1.5 includes the rewritten cookie/crumb
+# auth layer that fixes the recurring HTTP 401 "Invalid Crumb" errors.
+# The 0.2.x line is unmaintained; 1.x rewrote the session layer.
+yfinance>=1.5
 
-# Data / HTTP
-pandas>=2.2.2
-openpyxl>=3.1.5
-numpy>=1.26.4
-requests>=2.31.0
-httpx>=0.27.0
-yfinance>=0.2.54
+# ─── TradingAgents Engine ────────────────────────────────────
+# ★ NOTE — installed from GitHub (pinned tag) by bootstrap.sh.
+# Do NOT add a PyPI line here; the git install in bootstrap.sh
+# takes precedence and avoids version conflicts.
 
-# Visualization / export
-plotly>=5.24.1
-matplotlib>=3.9.2
-kaleido>=0.2.1
+# ─── Data / Numeric ──────────────────────────────────────────
+pandas>=2.0
+numpy>=1.24
 
-# Upstream agent framework. Install from GitHub: the PyPI package named
-# 'tradingagents' is an unrelated fork whose Propagator lacks asset_type.
-tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@v0.4.0
+# ─── Charting & Artifacts ────────────────────────────────────
+matplotlib>=3.7
+mplfinance>=0.12
+kaleido>=0.2
 
-# Tests (needed to run tests/ with pytest)
-pytest>=8.3.0
-pytest-asyncio>=0.23.0
+# ─── AI / LLM Engine ─────────────────────────────────────────
+langchain>=0.2
+langchain-openai>=0.1
+langchain-anthropic>=0.1
+langchain-google-genai>=0.1
+langgraph>=0.1
+openai>=1.14
+
+# ─── HTTP / Networking ───────────────────────────────────────
+httpx>=0.27
+requests>=2.31
+
+# ─── Misc Utilities ──────────────────────────────────────────
+python-dotenv>=1.0
+fredapi>=0.5

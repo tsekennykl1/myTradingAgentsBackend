@@ -7,6 +7,12 @@ name: Deploy backend to S3 + EC2 (PM2)
 #     the systemd→PM2 migration and all PM2 setup.
 #   • All other steps are unchanged; the health-check still runs inside
 #     bootstrap.sh and the SSM wait loop picks up success/failure.
+#
+# ★ NEW — bootstrap.sh now also handles (no deploy.yml changes needed):
+#   • Fix 4: yfinance >= 1.5 verified (401 "Invalid Crumb")
+#   • Fix 5: tradingagents installed from GitHub @ pinned tag
+#   • .env mode 640 + deploy user in service group (replaces manual chmod 644)
+#   • Key package versions printed in diagnostics for audit trail
 
 on:
   push:

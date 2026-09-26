@@ -29,7 +29,7 @@ import pandas as pd
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).expanduser()
 DB_PATH = DATA_DIR / "app.db"
-SOURCE_DIR = Path(__file__).resolve().parent / "data"
+SOURCE_DIR = Path(__file__).resolve().parent
 ENGLISH_FILE = Path(os.getenv("HK_SECURITIES_EN_FILE", SOURCE_DIR / "ListOfSecurities.xlsx"))
 CHINESE_FILE = Path(os.getenv("HK_SECURITIES_ZH_FILE", SOURCE_DIR / "ListOfSecurities_c.xlsx"))
 
