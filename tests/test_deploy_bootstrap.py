@@ -25,19 +25,21 @@ def test_bootstrap_env_fallback_when_s3_env_missing():
     assert 'MCP_ENABLED=0' in content
     assert 'wrote minimal runtime defaults with MCP disabled' in content
     assert 'Provider-backed analysis stays unavailable until a real .env is uploaded.' in content
-    assert 'chmod 600 "${ENV_PATH}"' in content
+    assert 'chmod 640 "${ENV_PATH}"' in content
 
 
-def test_deploy_workflow_inlines_bootstrap_for_ssm():
+def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
     workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy.yml"
     content = workflow.read_text()
 
-    assert 'python - <<\'PY\' > /tmp/ssm-commands.json' in content
-    assert 'import base64' in content
+    # bootstrap.sh is uploaded to S3 in the same step as the release zip so the
+    # SSM command can download it on the EC2 instance (avoids the SSM per-command
+    # size limit which bootstrap.sh would exceed if inlined as base64).
+    assert 'aws s3 cp scripts/bootstrap.sh' in content
+    assert 'scripts/bootstrap.sh' in content
     assert 'import shlex' in content
-    assert 'base64.b64encode(Path("scripts/bootstrap.sh").read_bytes()).decode()' in content
-    assert 'printf \'%s\\\\n\' \'{bootstrap_b64}\' > /tmp/bootstrap.sh.b64' in content
-    assert 'base64 -d /tmp/bootstrap.sh.b64 > /tmp/bootstrap.sh' in content
-    assert 'f"export APP_ROOT={shlex.quote(os.environ[\'APP_ROOT\'])}"' in content
+    assert 'f"aws s3 cp s3://{os.environ[\'BUCKET\']}/scripts/bootstrap.sh /tmp/bootstrap.sh"' in content
     assert '--parameters "file:///tmp/ssm-commands.json"' in content
-    assert '"aws s3 cp s3://${BUCKET}/scripts/bootstrap.sh /tmp/bootstrap.sh"' not in content
+    # Must NOT inline the raw script content in the SSM parameters
+    assert 'import base64' not in content
+    assert 'base64.b64encode' not in content

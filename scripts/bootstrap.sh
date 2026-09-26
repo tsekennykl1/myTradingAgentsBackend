@@ -595,6 +595,24 @@ CLEANUP_EOF
 chmod +x "${CLEANUP_SCRIPT}"
 chown "${SVC_USER}:${SVC_USER}" "${CLEANUP_SCRIPT}"
 
+# Ensure crond is running (AL2023 = cronie, Ubuntu = cron)
+# Must install BEFORE writing to /etc/cron.d/ — AL2023 does not ship cronie
+# by default, so /etc/cron.d/ may not yet exist on the first deploy.
+if [ "${PKG_MGR}" = "dnf" ]; then
+  dnf install -y cronie 2>/dev/null || true
+  systemctl enable crond 2>/dev/null || true
+  systemctl start  crond 2>/dev/null || true
+  CRON_SVC="crond"
+else
+  systemctl enable cron 2>/dev/null || true
+  systemctl start  cron 2>/dev/null || true
+  CRON_SVC="cron"
+fi
+
+# Ensure /etc/cron.d/ exists even if cronie was already present but the
+# directory was never created (belt-and-suspenders guard).
+mkdir -p /etc/cron.d
+
 # Cron entry: run daily at 03:17 UTC as the service user.
 # Minute intentionally not :00 to avoid load spikes from other cron jobs.
 cat > "${CRON_FILE}" <<CRON_EOF
@@ -607,18 +625,6 @@ PATH=/usr/local/bin:/usr/bin:/bin
 CRON_EOF
 
 chmod 644 "${CRON_FILE}"
-
-# Ensure crond is running (AL2023 = cronie, Ubuntu = cron)
-if [ "${PKG_MGR}" = "dnf" ]; then
-  dnf install -y cronie 2>/dev/null || true
-  systemctl enable crond 2>/dev/null || true
-  systemctl start  crond 2>/dev/null || true
-  CRON_SVC="crond"
-else
-  systemctl enable cron 2>/dev/null || true
-  systemctl start  cron 2>/dev/null || true
-  CRON_SVC="cron"
-fi
 
 if systemctl is-active --quiet "${CRON_SVC}" 2>/dev/null; then
   echo "Cleanup cron job installed ✓ (${CRON_FILE}, retention=${CLEANUP_RETENTION_DAYS}d)"
@@ -719,9 +725,9 @@ swapon --show
 free -h
 # ★ NEW (Fix 8) — cleanup cron job in diagnostics
 echo "=== Cleanup cron job ==="
-cat "${CRON_FILE}"
+cat "${CRON_FILE}" || true
 echo "=== Cleanup script ==="
-cat "${CLEANUP_SCRIPT}"
+cat "${CLEANUP_SCRIPT}" || true
 echo "=== Disk usage (target directories) ==="
 du -sh "${APP_ROOT}/data/tmp_charts"        2>/dev/null || echo "  data/tmp_charts: not yet created"
 du -sh "${APP_ROOT}/data/run_artifacts"     2>/dev/null || echo "  data/run_artifacts: not yet created"
