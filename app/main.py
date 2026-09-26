@@ -78,6 +78,34 @@ def health() -> dict[str, str]:
         "service": "trading-analysis-api"
     }
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    from app.services.analyze_service import reconcile_incomplete_runs, list_runs
+    from app.artifacts import write_result_html_artifact
+    from app.worker import start_workers
+
+    reconcile_incomplete_runs()
+    start_workers()
+
+    # ★ NEW — regenerate result.html for completed runs using the new template
+    try:
+        for run in list_runs():
+            if run.get("status") == "completed" and run.get("result"):
+                try:
+                    write_result_html_artifact(run["run_id"])
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    if os.getenv("MCP_ENABLED", "1").strip().lower() in {"0", "false", "no", "off"}:
+        yield
+        return
+    async with mcp.session_manager.run():
+        yield
+
+
+
 
 app.include_router(router)
 

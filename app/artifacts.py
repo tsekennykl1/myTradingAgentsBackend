@@ -18,8 +18,10 @@ a browser request can never fail just because a file was cleaned up.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -337,7 +339,126 @@ def _render_price_chart_png(run_id: str) -> bytes:
     return bytes(content)
 
 
+# ---------------------------------------------------------------------------
+# ★ NEW — helpers for the improved result.html (Option A)
+# ---------------------------------------------------------------------------
+
+def _public_base_url() -> str:
+    """Return PUBLIC_BASE_URL so generated HTML links hit the API, not the SPA."""
+    return os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+
+def _absolute_url(path: str) -> str:
+    """Turn a relative API path into an absolute URL when PUBLIC_BASE_URL is set."""
+    base = _public_base_url()
+    return f"{base}{path}" if base else path
+
+
+def _embed_chart_png_as_base64(run_id: str) -> Optional[str]:
+    """Read the price chart PNG for this run and return a data: URI, or None."""
+    png_path = _artifact_path(run_id, "price-chart.png")
+    content = _safe_read_bytes(png_path)
+    if not content:
+        # Try the legacy filename
+        content = _safe_read_bytes(_artifact_path(run_id, "chart.png"))
+    if not content:
+        # Try rendering on the fly (will fail gracefully if matplotlib unavailable)
+        try:
+            content = _render_price_chart_png(run_id)
+        except Exception:
+            return None
+    if not content:
+        return None
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+_REPORT_DISPLAY_NAMES: dict[str, str] = {
+    "market_report": "📊 Market Analyst",
+    "sentiment_report": "💬 Sentiment Analyst",
+    "news_report": "📰 News Analyst",
+    "fundamentals_report": "📈 Fundamentals Analyst",
+    "investment_plan": "📋 Investment Plan",
+    "trader_investment_plan": "🎯 Trader Investment Plan",
+    "trader_plan": "🎯 Trader Plan",
+    "bull_report": "🐂 Bull Researcher",
+    "bear_report": "🐻 Bear Researcher",
+    "risk_aggressive": "⚡ Risk — Aggressive",
+    "risk_conservative": "🛡️ Risk — Conservative",
+    "risk_neutral": "⚖️ Risk — Neutral",
+    "final_trade_decision": "✅ Final Trade Decision",
+    "final_decision": "✅ Final Decision",
+}
+
+
+def _report_display_name(key: str) -> str:
+    if key in _REPORT_DISPLAY_NAMES:
+        return _REPORT_DISPLAY_NAMES[key]
+    # Title-case the key: "market_report" → "Market Report"
+    return key.replace("_", " ").title()
+
+
+def _format_report_text(value: Any) -> str:
+    """Turn a report value (str, dict, or anything) into escaped HTML text."""
+    if isinstance(value, str):
+        return _escape_html(value)
+    if isinstance(value, dict):
+        return _escape_html(json.dumps(value, ensure_ascii=False, indent=2))
+    return _escape_html(str(value))
+
+
+def _build_reports_html(reports: dict[str, Any]) -> str:
+    """Render all reports as collapsible <details> sections."""
+    if not reports:
+        return '<p class="muted">No agent reports available for this run.</p>'
+
+    # Preferred display order
+    order = [
+        "market_report", "sentiment_report", "news_report", "fundamentals_report",
+        "bull_report", "bear_report", "investment_plan", "trader_investment_plan",
+        "trader_plan", "risk_aggressive", "risk_conservative", "risk_neutral",
+        "final_trade_decision", "final_decision",
+    ]
+    ordered_keys = [k for k in order if k in reports]
+    remaining = [k for k in reports if k not in ordered_keys]
+    all_keys = ordered_keys + sorted(remaining)
+
+    parts: list[str] = []
+    for key in all_keys:
+        content = reports[key]
+        if content is None or (isinstance(content, str) and not content.strip()):
+            continue
+        display = _report_display_name(key)
+        body = _format_report_text(content)
+        parts.append(
+            f'<details class="report-section" open>\n'
+            f"  <summary>{display}</summary>\n"
+            f'  <div class="report-body">{body}</div>\n'
+            f"</details>"
+        )
+
+    return "\n".join(parts) if parts else '<p class="muted">No agent reports available.</p>'
+
+
+def _action_color(action: str) -> str:
+    """CSS colour for the action badge."""
+    lowered = action.strip().lower()
+    if lowered in ("buy", "overweight"):
+        return "#16a34a"
+    if lowered in ("sell", "underweight"):
+        return "#dc2626"
+    if lowered in ("hold", "review"):
+        return "#d97706"
+    return "#64748b"
+
+
 def build_result_html_content(run_id: str) -> str:
+    """Build a rich, self-contained HTML report for one completed run.
+
+    The page is fully standalone: inline CSS, no JavaScript frameworks, and the
+    price chart is embedded as a base64 PNG data-URI so the file works even when
+    saved to disk, printed, or emailed.
+    """
     run = _resolve_run(run_id)
     if not run:
         raise ValueError(f"Run not found: {run_id}")
@@ -346,50 +467,136 @@ def build_result_html_content(run_id: str) -> str:
     partial = run.get("partial_result") or {}
     result = run.get("result") or {}
 
-    run_id_html = _escape_html(run_id)
-    status_html = _escape_html(str(run.get("status", "unknown")))
-    ticker_html = _escape_html(_resolve_run_symbol(run) or "n/a")
-    analysis_date_html = _escape_html(_resolve_run_analysis_date(run) or "n/a")
-    range_html = _escape_html(_resolve_run_range(run))
+    # ── Scalar fields ──────────────────────────────────────────────────────
+    run_id_safe = _escape_html(run_id)
+    status = _escape_html(str(run.get("status", "unknown")))
+    ticker = _resolve_run_symbol(run) or "n/a"
+    ticker_safe = _escape_html(ticker)
+    analysis_date = _resolve_run_analysis_date(run) or "n/a"
+    analysis_date_safe = _escape_html(analysis_date)
+    range_safe = _escape_html(_resolve_run_range(run))
+    created_at = _escape_html(str(run.get("created_at") or ""))
+    completed_at = _escape_html(str(run.get("completed_at") or ""))
 
-    action_html = _escape_html(
-        str(
-            (result.get("action") if isinstance(result, dict) else None)
-            or (partial.get("action") if isinstance(partial, dict) else None)
-            or "n/a"
-        )
+    action = str(
+        (result.get("action") if isinstance(result, dict) else None)
+        or (partial.get("action") if isinstance(partial, dict) else None)
+        or "n/a"
     )
-    confidence_html = _escape_html(
-        str(
-            (result.get("confidence") if isinstance(result, dict) else None)
-            or (partial.get("confidence") if isinstance(partial, dict) else None)
-            or "n/a"
-        )
+    action_safe = _escape_html(action)
+    action_bg = _action_color(action)
+
+    confidence_raw = (
+        (result.get("confidence") if isinstance(result, dict) else None)
+        or (partial.get("confidence") if isinstance(partial, dict) else None)
     )
-    summary_html = _escape_html(
-        str(
-            (result.get("summary") if isinstance(result, dict) else None)
-            or (partial.get("summary") if isinstance(partial, dict) else None)
-            or "No summary available."
-        )
+    if isinstance(confidence_raw, (int, float)):
+        confidence_safe = _escape_html(f"{confidence_raw}%")
+    else:
+        confidence_safe = _escape_html(str(confidence_raw or "n/a"))
+
+    summary = str(
+        (result.get("summary") if isinstance(result, dict) else None)
+        or (partial.get("summary") if isinstance(partial, dict) else None)
+        or "No summary available."
+    )
+    summary_safe = _escape_html(summary)
+
+    # ── Provider / model info ──────────────────────────────────────────────
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    provider_safe = _escape_html(
+        str(params.get("llm_provider") or payload.get("provider") or "n/a")
+    )
+    deep_model_safe = _escape_html(
+        str(params.get("deep_think_llm") or payload.get("deep_model") or "n/a")
+    )
+    quick_model_safe = _escape_html(
+        str(params.get("quick_think_llm") or payload.get("quick_model") or "n/a")
     )
 
-    raw_result = json.dumps(result, ensure_ascii=False, indent=2) if isinstance(result, dict) else str(result)
-    raw_payload = json.dumps(payload, ensure_ascii=False, indent=2) if isinstance(payload, dict) else str(payload)
+    # ── Reports ────────────────────────────────────────────────────────────
+    reports: dict[str, Any] = {}
+    if isinstance(result.get("reports"), dict):
+        reports.update(result["reports"])
+    elif isinstance(partial.get("reports"), dict):
+        reports.update(partial["reports"])
+    reports_html = _build_reports_html(reports)
+
+    # ── Embedded chart ─────────────────────────────────────────────────────
+    chart_data_uri = _embed_chart_png_as_base64(run_id)
+    if chart_data_uri:
+        chart_section = (
+            '<div class="card">\n'
+            "  <h2>📉 Price Chart</h2>\n"
+            f'  <img src="{chart_data_uri}" alt="{ticker_safe} price chart" class="chart-img" />\n'
+            "</div>"
+        )
+    else:
+        chart_link = _absolute_url(f"/runs/{run_id}/price-chart.html")
+        chart_section = (
+            '<div class="card">\n'
+            "  <h2>📉 Price Chart</h2>\n"
+            f'  <p class="muted">Chart image not embedded. <a href="{_escape_html(chart_link)}">View interactive chart →</a></p>\n'
+            "</div>"
+        )
+
+    # ── Artifact links (absolute URLs) ─────────────────────────────────────
+    artifact_links = {
+        "Market Data (JSON)": _absolute_url(f"/runs/{run_id}/market-data.json"),
+        "Price Chart (JSON)": _absolute_url(f"/runs/{run_id}/price-chart.json"),
+        "Price Chart (PNG)": _absolute_url(f"/runs/{run_id}/price-chart.png"),
+        "Price Chart (Interactive)": _absolute_url(f"/runs/{run_id}/price-chart.html"),
+    }
+    artifact_items = "\n".join(
+        f'        <li><a href="{_escape_html(url)}">{_escape_html(label)}</a></li>'
+        for label, url in artifact_links.items()
+    )
+
+    # ── Raw result (collapsed by default for debugging) ────────────────────
+    raw_result_json = (
+        json.dumps(result, ensure_ascii=False, indent=2)
+        if isinstance(result, dict)
+        else str(result)
+    )
+
+    # ── Timings ────────────────────────────────────────────────────────────
+    timings = run.get("timings") or {}
+    stage_durations = timings.get("stage_durations_ms") or {}
+    timings_html = ""
+    if stage_durations:
+        rows_html = "\n".join(
+            f"          <tr><td>{_escape_html(name)}</td>"
+            f"<td>{int(ms):,} ms</td></tr>"
+            for name, ms in stage_durations.items()
+        )
+        timings_html = (
+            '<div class="card">\n'
+            "  <h2>⏱️ Timings</h2>\n"
+            '  <table class="timings-table">\n'
+            "    <tbody>\n"
+            f"      {rows_html}\n"
+            "    </tbody>\n"
+            "  </table>\n"
+            "</div>"
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Run Result - {run_id_html}</title>
+  <title>{ticker_safe} Analysis — {analysis_date_safe}</title>
+  <meta name="description" content="AI trading analysis for {ticker_safe} as of {analysis_date_safe}">
   <style>
+    *, *::before, *::after {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      padding: 24px;
+      padding: 24px 16px;
       background: #0f172a;
       color: #e2e8f0;
-      font-family: Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                   'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.6;
     }}
     .wrap {{
       max-width: 1100px;
@@ -398,89 +605,278 @@ def build_result_html_content(run_id: str) -> str:
     .card {{
       background: #111827;
       border-radius: 12px;
-      padding: 20px;
+      padding: 20px 24px;
       margin-bottom: 16px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
     }}
-    h1, h2 {{
-      margin-top: 0;
-    }}
-    .meta {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    h1 {{ margin: 0 0 4px; font-size: 1.6em; }}
+    h2 {{ margin: 0 0 14px; font-size: 1.2em; color: #94a3b8; }}
+    a {{ color: #93c5fd; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .muted {{ color: #64748b; }}
+
+    /* ── Header strip ── */
+    .header-strip {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
       gap: 12px;
+      margin-bottom: 12px;
     }}
-    .pill {{
+    .header-strip h1 {{ flex: 1 0 auto; }}
+    .badge {{
       display: inline-block;
-      padding: 6px 10px;
+      padding: 4px 14px;
       border-radius: 999px;
-      background: #1f2937;
-      font-size: 14px;
+      font-size: 0.85em;
+      font-weight: 600;
+      color: #fff;
+    }}
+
+    /* ── Meta grid ── */
+    .meta-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+    }}
+    .meta-item {{
+      background: #1e293b;
+      border-radius: 8px;
+      padding: 10px 14px;
+    }}
+    .meta-label {{ font-size: 0.75em; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }}
+    .meta-value {{ font-size: 1em; font-weight: 600; color: #f1f5f9; margin-top: 2px; }}
+
+    /* ── Decision card ── */
+    .decision-card {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: flex-start;
+    }}
+    .decision-primary {{
+      flex: 0 0 auto;
+      text-align: center;
+      min-width: 120px;
+    }}
+    .decision-action {{
+      font-size: 1.6em;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }}
+    .decision-confidence {{
+      font-size: 0.9em;
+      color: #94a3b8;
+      margin-top: 4px;
+    }}
+    .decision-summary {{
+      flex: 1 1 300px;
+      white-space: pre-wrap;
+      line-height: 1.7;
+      color: #cbd5e1;
+    }}
+
+    /* ── Reports ── */
+    .report-section {{
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      overflow: hidden;
+    }}
+    .report-section summary {{
+      cursor: pointer;
+      padding: 12px 16px;
+      font-weight: 600;
+      font-size: 0.95em;
+      background: #1e293b;
+      user-select: none;
+    }}
+    .report-section summary:hover {{ background: #263044; }}
+    .report-body {{
+      padding: 14px 18px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.9em;
+      line-height: 1.75;
+      color: #cbd5e1;
+    }}
+
+    /* ── Chart ── */
+    .chart-img {{
+      width: 100%;
+      height: auto;
+      border-radius: 8px;
+      background: #fff;
+    }}
+
+    /* ── Timings ── */
+    .timings-table {{
+      width: 100%;
+      border-collapse: collapse;
+    }}
+    .timings-table td {{
+      padding: 6px 12px;
+      border-bottom: 1px solid #1e293b;
+      font-size: 0.88em;
+    }}
+    .timings-table td:first-child {{
+      color: #94a3b8;
+      width: 55%;
+    }}
+    .timings-table td:last-child {{
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }}
+
+    /* ── Artifacts ── */
+    .artifact-list {{ line-height: 2; }}
+    .artifact-list li {{ list-style: none; }}
+    .artifact-list li::before {{ content: "📎 "; }}
+
+    /* ── Raw JSON ── */
+    .raw-toggle summary {{
+      cursor: pointer;
+      font-size: 0.85em;
+      color: #64748b;
+      padding: 8px 0;
     }}
     pre {{
       white-space: pre-wrap;
       word-break: break-word;
       background: #0b1220;
-      padding: 12px;
+      padding: 14px;
       border-radius: 8px;
       overflow: auto;
-      color: #cbd5e1;
+      color: #94a3b8;
+      font-size: 0.82em;
+      max-height: 600px;
     }}
-    a {{
-      color: #93c5fd;
-      text-decoration: none;
+
+    /* ── Footer ── */
+    footer {{
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid #1e293b;
+      text-align: center;
+      color: #475569;
+      font-size: 0.78em;
     }}
-    a:hover {{
-      text-decoration: underline;
+
+    /* ── Print ── */
+    @media print {{
+      body {{ background: #fff; color: #1a1a1a; padding: 0; }}
+      .card {{ box-shadow: none; border: 1px solid #e2e8f0; }}
+      .report-section {{ break-inside: avoid; }}
+      details[open] > summary {{ font-weight: bold; }}
+      .meta-item {{ background: #f8fafc; }}
+      .report-section summary {{ background: #f1f5f9; }}
+      .report-body {{ color: #334155; }}
+      a {{ color: #2563eb; }}
+      pre {{ background: #f8fafc; color: #334155; }}
+      .badge {{ border: 2px solid currentColor; }}
     }}
-    ul {{
-      line-height: 1.8;
+
+    @media (max-width: 640px) {{
+      body {{ padding: 12px 8px; }}
+      .card {{ padding: 14px 12px; }}
+      .meta-grid {{ grid-template-columns: 1fr 1fr; }}
     }}
   </style>
 </head>
 <body>
   <div class="wrap">
+
+    <!-- ════ Header ════ -->
     <div class="card">
-      <h1>Analysis Result</h1>
-      <div class="meta">
-        <div><span class="pill">Run ID: {run_id_html}</span></div>
-        <div><span class="pill">Status: {status_html}</span></div>
-        <div><span class="pill">Ticker: {ticker_html}</span></div>
-        <div><span class="pill">Analysis Date: {analysis_date_html}</span></div>
-        <div><span class="pill">Range: {range_html}</span></div>
-        <div><span class="pill">Action: {action_html}</span></div>
-        <div><span class="pill">Confidence: {confidence_html}</span></div>
+      <div class="header-strip">
+        <h1>{ticker_safe} — Analysis Report</h1>
+        <span class="badge" style="background:{action_bg}">{action_safe}</span>
+        <span class="badge" style="background:#334155">{status}</span>
+      </div>
+      <div class="meta-grid">
+        <div class="meta-item">
+          <div class="meta-label">Ticker</div>
+          <div class="meta-value">{ticker_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Analysis Date</div>
+          <div class="meta-value">{analysis_date_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Confidence</div>
+          <div class="meta-value">{confidence_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Range</div>
+          <div class="meta-value">{range_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Provider</div>
+          <div class="meta-value">{provider_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Deep Model</div>
+          <div class="meta-value">{deep_model_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Quick Model</div>
+          <div class="meta-value">{quick_model_safe}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Run ID</div>
+          <div class="meta-value" style="font-size:0.72em;word-break:break-all">{run_id_safe}</div>
+        </div>
       </div>
     </div>
 
+    <!-- ════ Decision ════ -->
     <div class="card">
-      <h2>Summary</h2>
-      <pre>{summary_html}</pre>
+      <h2>🎯 Portfolio Decision</h2>
+      <div class="decision-card">
+        <div class="decision-primary">
+          <div class="decision-action" style="color:{action_bg}">{action_safe}</div>
+          <div class="decision-confidence">Confidence: {confidence_safe}</div>
+        </div>
+        <div class="decision-summary">{summary_safe}</div>
+      </div>
     </div>
 
+    <!-- ════ Chart ════ -->
+    {chart_section}
+
+    <!-- ════ Agent Reports ════ -->
     <div class="card">
-      <h2>Artifacts</h2>
-      <ul>
-        <li><a href="/runs/{run_id_html}/market-data">market-data.json</a></li>
-        <li><a href="/runs/{run_id_html}/market-data.json">market-data.json (alias)</a></li>
-        <li><a href="/runs/{run_id_html}/price-chart.json">price-chart.json</a></li>
-        <li><a href="/runs/{run_id_html}/price-chart.png">price-chart.png</a></li>
-        <li><a href="/runs/{run_id_html}/price-chart.html">price-chart.html</a></li>
-        <li><a href="/runs/{run_id_html}/chart.png">chart.png (legacy)</a></li>
-        <li><a href="/runs/{run_id_html}/chart.html">chart.html (legacy)</a></li>
-        <li><a href="/runs/{run_id_html}/result.html">result.html</a></li>
+      <h2>🤖 Agent Reports</h2>
+      {reports_html}
+    </div>
+
+    <!-- ════ Timings ════ -->
+    {timings_html}
+
+    <!-- ════ Artifacts ════ -->
+    <div class="card">
+      <h2>📦 Artifacts</h2>
+      <ul class="artifact-list">
+{artifact_items}
       </ul>
     </div>
 
+    <!-- ════ Raw Result (collapsed) ════ -->
     <div class="card">
-      <h2>Raw Result</h2>
-      <pre>{_escape_html(raw_result)}</pre>
+      <details class="raw-toggle">
+        <summary>Show raw engine result (JSON)</summary>
+        <pre>{_escape_html(raw_result_json)}</pre>
+      </details>
     </div>
 
-    <div class="card">
-      <h2>Run Payload</h2>
-      <pre>{_escape_html(raw_payload)}</pre>
-    </div>
+    <footer>
+      Generated by Trading Analysis Engine &middot;
+      Built on <a href="https://github.com/TauricResearch/TradingAgents">TradingAgents</a>
+      (arXiv:2412.20138) &middot; Not investment advice &middot;
+      Created {created_at} &middot; Completed {completed_at}
+    </footer>
+
   </div>
 </body>
 </html>

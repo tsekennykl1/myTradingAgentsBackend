@@ -19,6 +19,14 @@
 #     old wheels that still carry the HTTP 401 "Invalid Crumb" bug.
 #   • ★ NEW (Fix 5): tradingagents package installed from GitHub (pinned tag)
 #     after requirements.txt so the correct engine version is always present.
+#   • ★ NEW (Fix 6): nginx config writes TWO server blocks — one for the
+#     named domain (myfinance5051.com) and one catch-all (_).  Both include:
+#       – "location = /api"  exact match so the frontend's engine health
+#         check does not fall through to the SPA (was returning 301).
+#       – "location /api/mcp" with streaming-friendly settings (no buffering,
+#         600 s timeout) for MCP / SSE connections.
+#       – "location /api/"    prefix-strip proxy to uvicorn on :8000.
+#       – "location /"        SPA catch-all → Node/Nitro on :3000.
 # Idempotent — safe to re-run.
 set -euxo pipefail
 
@@ -41,6 +49,11 @@ TA_TAG="${TA_TAG:-v0.4.0}"
 # ★ NEW — yfinance minimum version (crumb/cookie auth rewrite)
 MIN_YF_MAJOR=1
 MIN_YF_MINOR=5
+
+# ★ NEW (Fix 6) — nginx domain and frontend port (configurable via env)
+NGINX_DOMAIN="${NGINX_DOMAIN:-myfinance5051.com}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+BACKEND_PORT="${BACKEND_PORT:-8000}"
 
 # ── Detect package manager (AL2023 = dnf, Ubuntu = apt-get) ──
 if command -v dnf >/dev/null 2>&1; then
@@ -210,7 +223,16 @@ fi
 # otherwise it holds port 8000 and the PM2 process fails to bind.
 pkill -f "uvicorn app.main:app" 2>/dev/null || true
 
-# ── Nginx reverse proxy (port 80 → uvicorn 8000) ─────────────
+# ── Nginx reverse proxy ──────────────────────────────────────
+# ★ NEW (Fix 6) — Two server blocks: named domain + catch-all.
+#   Both route /api → backend (uvicorn :8000) and / → frontend (Node :3000).
+#
+#   KEY FIX: "location = /api" (exact match, no trailing slash).
+#   The frontend's engine health check pings /api (not /api/).
+#   Without the exact-match block, nginx's "location /api/" does NOT match
+#   "/api" — the request falls through to the SPA on port 3000, which
+#   returns 301 or HTML, and the UI shows "Your engine is not reachable."
+# ──────────────────────────────────────────────────────────────
 if ! command -v nginx >/dev/null 2>&1; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     dnf install -y nginx
@@ -219,29 +241,79 @@ if ! command -v nginx >/dev/null 2>&1; then
   fi
 fi
 
-cat > /etc/nginx/conf.d/mytradingagents.conf <<'NGINX_EOF'
+# Helper: generates a server block.  Called twice — once for the named
+# domain and once for the catch-all.
+nginx_server_block() {
+  local SERVER_NAME_DIRECTIVE="$1"
+  cat <<BLOCK
 server {
     listen 80;
-    server_name _;
+    server_name ${SERVER_NAME_DIRECTIVE};
 
+    # ── FIX: exact /api (no trailing slash) ──────────────────
+    # Frontend pings /api for engine status.  "location /api/"
+    # does NOT match "/api" — without this the check hits the SPA.
+    location = /api {
+        proxy_pass             http://127.0.0.1:${BACKEND_PORT}/;
+        proxy_http_version     1.1;
+        proxy_set_header       Host              \$host;
+        proxy_set_header       X-Real-IP         \$remote_addr;
+        proxy_set_header       X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header       X-Forwarded-Proto \$scheme;
+    }
+
+    # ── MCP endpoint — streaming / SSE ───────────────────────
+    location /api/mcp {
+        proxy_pass             http://127.0.0.1:${BACKEND_PORT}/mcp;
+        proxy_http_version     1.1;
+        proxy_set_header       Host              \$host;
+        proxy_set_header       X-Real-IP         \$remote_addr;
+        proxy_set_header       X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header       X-Forwarded-Proto \$scheme;
+        proxy_set_header       Connection        '';
+        chunked_transfer_encoding off;
+        proxy_buffering        off;
+        proxy_cache            off;
+        proxy_read_timeout     600s;
+        proxy_send_timeout     600s;
+    }
+
+    # ── Backend API — strip /api/ prefix ─────────────────────
+    location /api/ {
+        proxy_pass             http://127.0.0.1:${BACKEND_PORT}/;
+        proxy_http_version     1.1;
+        proxy_set_header       Host              \$host;
+        proxy_set_header       X-Real-IP         \$remote_addr;
+        proxy_set_header       X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header       X-Forwarded-Proto \$scheme;
+        proxy_buffering        off;
+        proxy_cache            off;
+        proxy_read_timeout     300s;
+        proxy_send_timeout     300s;
+    }
+
+    # ── Frontend — everything else → Node/Nitro ─────────────
     location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # WebSocket support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # Longer timeouts for analysis runs
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
+        proxy_pass             http://127.0.0.1:${FRONTEND_PORT};
+        proxy_http_version     1.1;
+        proxy_set_header       Host              \$host;
+        proxy_set_header       X-Real-IP         \$remote_addr;
+        proxy_set_header       X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header       X-Forwarded-Proto \$scheme;
+        proxy_set_header       Upgrade           \$http_upgrade;
+        proxy_set_header       Connection        "upgrade";
     }
 }
-NGINX_EOF
+BLOCK
+}
+
+# Named domain
+nginx_server_block "${NGINX_DOMAIN} www.${NGINX_DOMAIN}" \
+  > /etc/nginx/conf.d/myfinance.conf
+
+# Catch-all (direct IP, ALB health checks, etc.)
+nginx_server_block "_" \
+  > /etc/nginx/conf.d/mytradingagents.conf
 
 # Remove the default server block on BOTH distros
 if [ -f /etc/nginx/conf.d/default.conf ]; then
@@ -469,6 +541,11 @@ echo "=== Key Python packages ==="
   | grep -E '^(Name|Version):' || true
 echo "=== nginx status ==="
 systemctl status nginx --no-pager || true
+# ★ NEW (Fix 6) — print generated nginx configs for deploy audit trail
+echo "=== nginx config: myfinance.conf ==="
+cat /etc/nginx/conf.d/myfinance.conf
+echo "=== nginx config: mytradingagents.conf ==="
+cat /etc/nginx/conf.d/mytradingagents.conf
 echo "=== CloudWatch Agent status ==="
 systemctl status amazon-cloudwatch-agent --no-pager || true
 echo "=== SSM Agent status ==="
@@ -477,8 +554,13 @@ systemctl status amazon-ssm-agent --no-pager || true
 # ── Health check loop (up to 150 seconds) ────────────────────
 for i in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
-    echo "Backend healthy on release ${RELEASE_SHA}."
-    exit 0
+    # ★ NEW (Fix 6) — also verify the /api route through nginx
+    if curl -fsS "http://127.0.0.1/api" >/dev/null 2>&1; then
+      echo "Backend healthy on release ${RELEASE_SHA} (direct + nginx /api route ✓)."
+      exit 0
+    else
+      echo "WARNING: Backend healthy on :8000 but nginx /api route not yet working"
+    fi
   fi
   sleep 5
 done
