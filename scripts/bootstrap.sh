@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Backend repo path: scripts/bootstrap.sh
-# Runs on the EC2 instance (first boot and on every deploy).
+# Runs on the EC2 instance (first boot and on every deploy, via SSM).
 #
-# ★ PM2 CHANGE — overview:
-#   • Installs Node.js + PM2 alongside the Python stack.
-#   • Creates a thin start-backend.sh wrapper that sources .env then execs
-#     uvicorn (replaces systemd EnvironmentFile= which PM2 cannot use).
-#   • Generates an ecosystem.config.cjs consumed by `pm2 start`.
-#   • Runs `pm2 startup systemd` so PM2 auto-resurrects on reboot.
-#   • Installs pm2-logrotate for automatic log housekeeping.
-#   • On redeploy the old PM2 process is deleted, code is swapped, and
-#     a fresh `pm2 start` is issued — no manual intervention needed.
-#   • The legacy systemd unit (mytradingagents-backend.service) is
-#     detected and removed on the first PM2 deploy.
-#   • Installs and configures the CloudWatch Agent for RAM + disk monitoring.
+# Consolidated version — keeps the PM2 process manager, nginx reverse proxy,
+# CloudWatch Agent and SSM Agent setup, and adds the fixes from the manual
+# debugging sessions:
+#   • .env ownership/permissions fixed every deploy (the service user must be
+#     able to read it — fixes "Permission denied: '.env'").
+#   • TRADINGAGENTS_* model names auto-corrected to the litellm prefixed
+#     format (deepseek/deepseek-reasoner, deepseek/deepseek-chat) — fixes
+#     "LLM Provider NOT provided" errors from unprefixed deepseek-v4-* names.
+#   • SSM Agent verified running so deploy.yml's SendCommand never stalls.
+#   • Legacy systemd unit (mytradingagents-backend.service) removed on the
+#     first PM2 deploy so it can never fight PM2 for port 8000.
+# Idempotent — safe to re-run.
 set -euxo pipefail
 
 # ── Configuration ─────────────────────────────────────────────
@@ -21,7 +21,7 @@ APP_ROOT="${APP_ROOT:-/opt/myTradingAgentsBackend}"
 CODE_BUCKET="${CODE_BUCKET:-s3general-148535751717-ap-east-1-an}"
 CONFIG_BUCKET="${CONFIG_BUCKET:-s3general-148535751717-ap-east-1-an}"
 SERVICE_NAME="${SERVICE_NAME:-mytradingagents-backend}"        # legacy name
-PM2_APP_NAME="${PM2_APP_NAME:-mytradingagents-backend}"        # ★ PM2 process name
+PM2_APP_NAME="${PM2_APP_NAME:-mytradingagents-backend}"        # PM2 process name
 RELEASE_FILE="${RELEASE_FILE:-current/release.txt}"
 SVC_USER="${SVC_USER:-mytradingagents}"
 
@@ -61,7 +61,23 @@ if ! command -v aws >/dev/null 2>&1; then
   exit 1
 fi
 
-# ── ★ PM2 CHANGE — Install Node.js & PM2 ─────────────────────
+# ── SSM Agent — must be running or deploy.yml's SendCommand stalls ──
+# AL2023 ships it pre-installed; Ubuntu may need the snap. Non-fatal.
+if ! systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
+  echo "SSM Agent not active — installing/starting…"
+  if [ "${PKG_MGR}" = "dnf" ]; then
+    dnf install -y amazon-ssm-agent 2>/dev/null || true
+  else
+    snap install amazon-ssm-agent --classic 2>/dev/null || true
+  fi
+  systemctl enable amazon-ssm-agent 2>/dev/null || true
+  systemctl start  amazon-ssm-agent 2>/dev/null || true
+fi
+systemctl is-active --quiet amazon-ssm-agent \
+  && echo "SSM Agent is running ✓" \
+  || echo "WARNING: SSM Agent not running — SSM deploys will not reach this instance" >&2
+
+# ── Node.js & PM2 ─────────────────────────────────────────────
 if ! command -v node >/dev/null 2>&1; then
   echo "Installing Node.js…"
   if [ "${PKG_MGR}" = "dnf" ]; then
@@ -136,8 +152,7 @@ CW_EOF
 
 install_cloudwatch_agent || echo "WARNING: CloudWatch Agent setup failed — continuing deploy" >&2
 
-# ── ★ PM2 CHANGE — Service user now needs a real home dir ────
-# PM2 stores its state in ~/.pm2/ so we can no longer use --no-create-home.
+# ── Service user needs a real home dir (PM2 keeps state in ~/.pm2/) ──
 if ! id "${SVC_USER}" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "/home/${SVC_USER}" \
           --shell /bin/bash "${SVC_USER}"
@@ -149,16 +164,20 @@ elif [ ! -d "/home/${SVC_USER}" ]; then
 fi
 SVC_HOME="/home/${SVC_USER}"
 
-# ── ★ PM2 CHANGE — Migrate: remove legacy systemd unit ───────
-# On the first PM2 deploy, the old raw-uvicorn unit is still present.
-# Stop it, disable it, and delete the file so it never conflicts.
+# ── Migrate: remove legacy systemd unit ───────────────────────
+# On the first PM2 deploy, the old raw-uvicorn unit may still be present.
+# Stop it, disable it, and delete the file so it never fights PM2 for
+# port 8000.
 if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
   echo "Removing legacy systemd unit ${SERVICE_NAME}.service…"
-  systemctl stop  "${SERVICE_NAME}.service" 2>/dev/null || true
+  systemctl stop    "${SERVICE_NAME}.service" 2>/dev/null || true
   systemctl disable "${SERVICE_NAME}.service" 2>/dev/null || true
   rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
   systemctl daemon-reload
 fi
+# Also kill any manually started uvicorn (e.g. from a debugging session),
+# otherwise it holds port 8000 and the PM2 process fails to bind.
+pkill -f "uvicorn app.main:app" 2>/dev/null || true
 
 # ── Nginx reverse proxy (port 80 → uvicorn 8000) ─────────────
 if ! command -v nginx >/dev/null 2>&1; then
@@ -205,7 +224,7 @@ nginx -t
 systemctl enable nginx
 systemctl restart nginx
 
-# ── ★ PM2 CHANGE — Stop running PM2 app BEFORE replacing code ─
+# ── Stop running PM2 app BEFORE replacing code ────────────────
 sudo -u "${SVC_USER}" "${PM2_BIN}" delete "${PM2_APP_NAME}" 2>/dev/null || true
 
 # ── Deploy application code ──────────────────────────────────
@@ -243,11 +262,9 @@ ENV_PATH="${APP_ROOT}/.env"
 TMP_ENV_PATH="/tmp/deploy-env.$$"
 if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${TMP_ENV_PATH}"; then
   mv "${TMP_ENV_PATH}" "${ENV_PATH}"
-  chmod 600 "${ENV_PATH}"
   echo "Loaded .env from s3://${CONFIG_BUCKET}/config/.env"
 elif [ -f "${ENV_PATH}" ]; then
   rm -f "${TMP_ENV_PATH}"
-  chmod 600 "${ENV_PATH}"
   echo "WARNING: Missing .env in S3 config bucket; using existing ${ENV_PATH}" >&2
 else
   rm -f "${TMP_ENV_PATH}"
@@ -255,10 +272,22 @@ else
 # Auto-generated by deploy bootstrap because no runtime .env was available.
 MCP_ENABLED=0
 ENV_EOF
-  chmod 600 "${ENV_PATH}"
   echo "WARNING: Missing .env in S3 config bucket and no existing ${ENV_PATH}; wrote minimal runtime defaults with MCP disabled." >&2
   echo "WARNING: Provider-backed analysis stays unavailable until a real .env is uploaded." >&2
 fi
+
+# ── .env auto-repairs (idempotent) ────────────────────────────
+# 1. Model names: litellm needs the provider prefix (deepseek/...).
+#    Only rewrites the known-broken unprefixed values; correct lines untouched.
+sed -i \
+  -e 's|^TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4-pro|TRADINGAGENTS_DEEP_THINK_LLM=deepseek/deepseek-reasoner|' \
+  -e 's|^TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4-flash|TRADINGAGENTS_QUICK_THINK_LLM=deepseek/deepseek-chat|' \
+  "${ENV_PATH}"
+
+# 2. Ownership/permissions: the service user must be able to READ .env.
+#    Fixes "Permission denied: '.env'" when the file was created with sudo/root.
+chown "${SVC_USER}:${SVC_USER}" "${ENV_PATH}"
+chmod 600 "${ENV_PATH}"
 
 # ── Python virtual environment and dependencies ──────────────
 # tradingagents requires Python >=3.12; always use python3.12 explicitly.
@@ -292,7 +321,7 @@ fi
 "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
 "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
 
-# ── ★ PM2 CHANGE — Start wrapper script ──────────────────────
+# ── Start wrapper script ──────────────────────────────────────
 # This replaces systemd's EnvironmentFile= + ExecStart=.
 # `set -a` exports every variable sourced from .env so uvicorn sees them.
 cat > "${APP_ROOT}/start-backend.sh" <<'WRAPPER_EOF'
@@ -311,7 +340,7 @@ exec .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 WRAPPER_EOF
 chmod +x "${APP_ROOT}/start-backend.sh"
 
-# ── ★ PM2 CHANGE — Ecosystem config ──────────────────────────
+# ── Ecosystem config ──────────────────────────────────────────
 cat > "${APP_ROOT}/ecosystem.config.cjs" <<EOF
 // Auto-generated by bootstrap.sh — edits will be overwritten on next deploy.
 module.exports = {
@@ -334,14 +363,14 @@ module.exports = {
 };
 EOF
 
-# ── Fix ownership ────────────────────────────────────────────
+# ── Fix ownership (whole app dir belongs to the service user) ──
 chown -R "${SVC_USER}:${SVC_USER}" "${APP_ROOT}"
 
-# ── ★ PM2 CHANGE — Launch via PM2 ────────────────────────────
+# ── Launch via PM2 ────────────────────────────────────────────
 sudo -u "${SVC_USER}" bash -c \
   "cd ${APP_ROOT} && ${PM2_BIN} start ecosystem.config.cjs"
 
-# ── ★ PM2 CHANGE — Boot persistence (pm2 startup + save) ─────
+# ── Boot persistence (pm2 startup + save) ─────────────────────
 # This creates /etc/systemd/system/pm2-${SVC_USER}.service which runs
 # `pm2 resurrect` on boot, bringing back every saved process.
 env PATH="$PATH" "${PM2_BIN}" startup systemd \
@@ -349,7 +378,7 @@ env PATH="$PATH" "${PM2_BIN}" startup systemd \
   --service-name "pm2-${SVC_USER}"
 sudo -u "${SVC_USER}" "${PM2_BIN}" save
 
-# ── ★ PM2 CHANGE — Log rotation module ───────────────────────
+# ── Log rotation module ───────────────────────────────────────
 sudo -u "${SVC_USER}" "${PM2_BIN}" install pm2-logrotate 2>/dev/null || true
 sudo -u "${SVC_USER}" "${PM2_BIN}" set pm2-logrotate:max_size  10M  2>/dev/null || true
 sudo -u "${SVC_USER}" "${PM2_BIN}" set pm2-logrotate:retain    10   2>/dev/null || true
@@ -358,7 +387,7 @@ sudo -u "${SVC_USER}" "${PM2_BIN}" set pm2-logrotate:compress  true 2>/dev/null 
 # ── Cleanup temp files ───────────────────────────────────────
 rm -f /tmp/backend.zip /tmp/current-release.txt
 
-# ── ★ PM2 CHANGE — Diagnostics (replaces journalctl) ─────────
+# ── Diagnostics ───────────────────────────────────────────────
 sleep 8
 echo "=== PM2 process list ==="
 sudo -u "${SVC_USER}" "${PM2_BIN}" list
@@ -368,6 +397,8 @@ echo "=== nginx status ==="
 systemctl status nginx --no-pager || true
 echo "=== CloudWatch Agent status ==="
 systemctl status amazon-cloudwatch-agent --no-pager || true
+echo "=== SSM Agent status ==="
+systemctl status amazon-ssm-agent --no-pager || true
 
 # ── Health check loop (up to 150 seconds) ────────────────────
 for i in $(seq 1 30); do
