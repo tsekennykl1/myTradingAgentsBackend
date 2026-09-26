@@ -36,7 +36,6 @@ def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
     # SSM command can download it on the EC2 instance (avoids the SSM per-command
     # size limit which bootstrap.sh would exceed if inlined as base64).
     assert 'aws s3 cp scripts/bootstrap.sh' in content
-    assert 'scripts/bootstrap.sh' in content
     assert 'import shlex' in content
     assert 'f"aws s3 cp s3://{os.environ[\'BUCKET\']}/scripts/bootstrap.sh /tmp/bootstrap.sh"' in content
     assert '--parameters "file:///tmp/ssm-commands.json"' in content
