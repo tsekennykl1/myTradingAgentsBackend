@@ -33,12 +33,13 @@ def patch_default_config():
             logger.info("tradingagents_overrides: DEFAULT_CONFIG[%r] %r -> %r", key, old, new)
             DEFAULT_CONFIG[key] = new
 
+    # Also honour our .env — but remap those values too!
     env_deep = os.getenv("TRADINGAGENTS_DEEP_THINK_LLM", "").strip()
     env_quick = os.getenv("TRADINGAGENTS_QUICK_THINK_LLM", "").strip()
     if env_deep:
-        DEFAULT_CONFIG["deep_think_llm"] = env_deep
+        DEFAULT_CONFIG["deep_think_llm"] = _remap(env_deep)
     if env_quick:
-        DEFAULT_CONFIG["quick_think_llm"] = env_quick
+        DEFAULT_CONFIG["quick_think_llm"] = _remap(env_quick)
 
 
 def patch_model_catalog():
