@@ -12,6 +12,8 @@
 #   • TRADINGAGENTS_* model names auto-corrected to the litellm prefixed
 #     format (deepseek/deepseek-reasoner, deepseek/deepseek-chat) — fixes
 #     "LLM Provider NOT provided" errors from unprefixed deepseek-v4-* names.
+#     ★ UPDATED: Only runs when provider is actually 'deepseek' in .env.
+#     Skipped for openai_compatible, openrouter, ollama, etc.
 #   • SSM Agent verified running so deploy.yml's SendCommand never stalls.
 #   • Legacy systemd unit (mytradingagents-backend.service) removed on the
 #     first PM2 deploy so it can never fight PM2 for port 8000.
@@ -446,12 +448,22 @@ ENV_EOF
 fi
 
 # ── .env auto-repairs (idempotent) ────────────────────────────
-# 1. Model names: litellm needs the provider prefix (deepseek/...).
-#    Only rewrites the known-broken unprefixed values; correct lines untouched.
-sed -i \
-  -e 's|^TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4-pro|TRADINGAGENTS_DEEP_THINK_LLM=deepseek/deepseek-reasoner|' \
-  -e 's|^TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4-flash|TRADINGAGENTS_QUICK_THINK_LLM=deepseek/deepseek-chat|' \
-  "${ENV_PATH}"
+# 1. Model names: when provider is 'deepseek' (native), litellm needs
+#    the provider prefix (deepseek/...).
+#    ONLY runs when the .env actually uses provider=deepseek.
+#    Skipped for openai_compatible, openrouter, ollama, etc.
+ENV_PROVIDER=$(grep '^TRADINGAGENTS_LLM_PROVIDER=' "${ENV_PATH}" 2>/dev/null \
+  | head -1 | cut -d= -f2 | tr -d '"'"'" | xargs)
+
+if [ "${ENV_PROVIDER}" = "deepseek" ]; then
+  sed -i \
+    -e 's|^TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4-pro$|TRADINGAGENTS_DEEP_THINK_LLM=deepseek/deepseek-reasoner|' \
+    -e 's|^TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4-flash$|TRADINGAGENTS_QUICK_THINK_LLM=deepseek/deepseek-chat|' \
+    "${ENV_PATH}"
+  echo ".env auto-repair: checked deepseek model names (provider=deepseek)"
+else
+  echo ".env auto-repair: skipped model rewrite (provider=${ENV_PROVIDER:-unset}, not deepseek)"
+fi
 
 # 2. Ownership/permissions: the service user must be able to READ .env.
 #    Fixes "Permission denied: '.env'" when the file was created with sudo/root.
@@ -734,6 +746,9 @@ du -sh "${APP_ROOT}/data/run_artifacts"     2>/dev/null || echo "  data/run_arti
 du -sh "${APP_ROOT}/data/artifacts"         2>/dev/null || echo "  data/artifacts: not yet created"
 du -sh "${APP_ROOT}/artifacts"              2>/dev/null || echo "  artifacts: not yet created"
 du -sh "${APP_ROOT}/app/tradingagents_cache" 2>/dev/null || echo "  app/tradingagents_cache: not yet created"
+# ★ NEW — print .env provider for deploy audit trail
+echo "=== .env LLM provider ==="
+grep '^TRADINGAGENTS_LLM_PROVIDER=' "${APP_ROOT}/.env" 2>/dev/null || echo "  (not set)"
 
 # ── Health check loop (up to 150 seconds) ────────────────────
 for i in $(seq 1 30); do

@@ -85,6 +85,61 @@ PROVIDER_ALIASES = {
 }
 
 
+# ── Environment-based defaults + provider availability check ─────────
+
+def _env_defaults() -> Dict[str, str]:
+    """Read LLM configuration defaults from .env variables."""
+    return {
+        "provider":    os.getenv("TRADINGAGENTS_LLM_PROVIDER", "").strip(),
+        "deep_model":  os.getenv("TRADINGAGENTS_DEEP_THINK_LLM", "").strip(),
+        "quick_model": os.getenv("TRADINGAGENTS_QUICK_THINK_LLM", "").strip(),
+        "backend_url": os.getenv("TRADINGAGENTS_LLM_BACKEND_URL", "").strip(),
+    }
+
+
+def _provider_env_available(provider: str) -> bool:
+    """Return True if all required env vars for this provider are present."""
+    provider = (provider or "").strip().lower()
+
+    provider_env_map = {
+        "openai":            ["OPENAI_API_KEY"],
+        "google":            ["GOOGLE_API_KEY"],
+        "anthropic":         ["ANTHROPIC_API_KEY"],
+        "xai":               ["XAI_API_KEY"],
+        "deepseek":          ["DEEPSEEK_API_KEY"],
+        "qwen":              ["DASHSCOPE_API_KEY"],
+        "qwen_cn":           ["DASHSCOPE_CN_API_KEY"],
+        "glm":               ["ZHIPU_API_KEY"],
+        "glm_cn":            ["ZHIPU_CN_API_KEY"],
+        "minimax":           ["MINIMAX_API_KEY"],
+        "minimax_cn":        ["MINIMAX_CN_API_KEY"],
+        "openrouter":        ["OPENROUTER_API_KEY"],
+        "azure_openai":      [
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_OPENAI_API_VERSION",
+        ],
+        "ollama":            ["OLLAMA_BASE_URL"],
+        "openai_compatible": ["TRADINGAGENTS_LLM_BACKEND_URL"],
+        "bedrock":           ["AWS_DEFAULT_REGION"],
+    }
+
+    required = provider_env_map.get(provider, [])
+    missing = [k for k in required if not os.getenv(k, "").strip()]
+
+    if provider == "openai_compatible":
+        needs_key = (
+            os.getenv("OPENAI_COMPATIBLE_REQUIRES_API_KEY", "false")
+            .strip()
+            .lower()
+            == "true"
+        )
+        if needs_key and not os.getenv("OPENAI_COMPATIBLE_API_KEY", "").strip():
+            missing.append("OPENAI_COMPATIBLE_API_KEY")
+
+    return len(missing) == 0
+
+
 def validate_provider_env_or_raise(provider: str) -> None:
     provider = (provider or "").strip().lower()
 
@@ -659,10 +714,6 @@ def claim_next_run(worker_id: str, lease_seconds: int = 120) -> Optional[str]:
     now = datetime.now(UTC)
     now_s = now.isoformat()
     lease_s = (now + timedelta(seconds=lease_seconds)).isoformat()
-    # An expired lease is only reclaimable when the run also looks stale —
-    # a working worker continuously bumps updated_at through _update_run,
-    # publish_report, and _extend_lease.  120 s covers the longest gap
-    # between progress updates during an engine call.
     stale_cutoff = (now - timedelta(seconds=120)).isoformat()
     with _DB_LOCK:
         conn = _get_conn()
@@ -707,7 +758,8 @@ def claim_next_run(worker_id: str, lease_seconds: int = 120) -> Optional[str]:
 
 def release_run_lease(run_id: str, retry: bool = False) -> None:
     run = get_run(run_id)
-    if not run: return
+    if not run:
+        return
     max_attempts = max(1, int(os.getenv("RUN_MAX_ATTEMPTS", "3")))
     should_retry = retry and int(run.get("attempt_count") or 0) < max_attempts and not run.get("cancel_requested")
     delay = min(60, 2 ** max(0, int(run.get("attempt_count") or 1)))
@@ -720,9 +772,11 @@ def release_run_lease(run_id: str, retry: bool = False) -> None:
 
 def publish_report(run_id: str, name: str, content: Any) -> bool:
     """Atomically expose one completed report and bump the polling version."""
-    if not name or content is None: return False
+    if not name or content is None:
+        return False
     run = get_run(run_id)
-    if not run: return False
+    if not run:
+        return False
     partial = dict(run.get("partial_result") or {})
     reports = dict(partial.get("reports") or {})
     reports[name] = content
@@ -837,12 +891,31 @@ def create_or_reuse_run(payload: Dict[str, Any]) -> Dict[str, Any]:
     _init_db()
 
     normalized_payload = _normalize_payload(payload)
+    defaults = _env_defaults()
+
     provider = (
         (normalized_payload.get("params") or {}).get("llm_provider")
         or normalized_payload.get("provider")
+        or defaults["provider"]
         or "openai"
     )
     provider = _normalize_provider(provider)
+
+    # ── Fallback: if the requested provider's keys are missing,
+    #    use the .env-configured provider instead of raising 400. ──
+    if not _provider_env_available(provider) and defaults["provider"]:
+        env_provider = _normalize_provider(defaults["provider"])
+        if env_provider != provider and _provider_env_available(env_provider):
+            provider = env_provider
+            # Rewrite the payload so the engine also uses the fallback
+            params = dict(normalized_payload.get("params") or {})
+            params["llm_provider"] = provider
+            if defaults["deep_model"]:
+                params["deep_think_llm"] = defaults["deep_model"]
+            if defaults["quick_model"]:
+                params["quick_think_llm"] = defaults["quick_model"]
+            normalized_payload["params"] = params
+
     validate_provider_env_or_raise(provider)
 
     payload_hash = _payload_hash(normalized_payload)
@@ -982,6 +1055,7 @@ def _normalize_model(value: Any) -> Any:
 def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(payload)
     params = dict(payload.get("params") or {})
+    defaults = _env_defaults()
 
     if "model" in payload:
         payload["model"] = _normalize_model(payload["model"])
@@ -998,24 +1072,41 @@ def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if "quick_think_llm" in params:
         params["quick_think_llm"] = _normalize_model(params["quick_think_llm"])
 
+    # ── Inject .env defaults for fields absent from the payload ──
+    if not params.get("llm_provider") and not payload.get("provider"):
+        if defaults["provider"]:
+            params["llm_provider"] = defaults["provider"]
+
+    if not params.get("deep_think_llm") and not payload.get("model"):
+        if defaults["deep_model"]:
+            params["deep_think_llm"] = defaults["deep_model"]
+
+    if not params.get("quick_think_llm"):
+        if defaults["quick_model"]:
+            params["quick_think_llm"] = defaults["quick_model"]
+
     payload["params"] = params
     return payload
 
 
 def _build_tradingagents_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = _normalize_payload(payload)
+    defaults = _env_defaults()
 
     config_input: Dict[str, Any] = {
         "ticker": _resolve_ticker(payload),
         "analysisDate": _resolve_analysis_date(payload),
         "provider": payload.get("provider")
         or (payload.get("params") or {}).get("llm_provider")
+        or defaults["provider"]
         or "openai",
         "quickModel": (payload.get("params") or {}).get("quick_think_llm")
         or payload.get("model")
+        or defaults["quick_model"]
         or "",
         "deepModel": (payload.get("params") or {}).get("deep_think_llm")
         or payload.get("model")
+        or defaults["deep_model"]
         or "",
         "researchDepth": (payload.get("params") or {}).get("research_depth") or "Shallow",
         "language": (payload.get("params") or {}).get("language") or "English",
@@ -1425,7 +1516,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=1500,
         )
-        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
+        _extend_lease(run_id)
         _append_log(run_id, f"Downloading market data for {ticker}.")
 
         try:
@@ -1490,7 +1581,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=1500,
         )
-        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
+        _extend_lease(run_id)
         _append_log(run_id, "Building price chart artifacts.")
 
         if df is not None and not df.empty:
@@ -1550,7 +1641,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=2000,
         )
-        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
+        _extend_lease(run_id)
         _append_log(run_id, "Preparing TradingAgents engine adapter.")
 
         if not engine_available():
@@ -1574,7 +1665,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=5000,
         )
-        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
+        _extend_lease(run_id)
         _append_log(run_id, "Calling TradingAgents engine adapter.")
         _increment_counter(run_id, "engine_calls_count", 1)
 
@@ -1609,7 +1700,7 @@ def _run_in_background(run_id: str) -> None:
             total_steps=7,
             poll_after_ms=1500,
         )
-        _extend_lease(run_id)  # ── FIX (Change C): keep lease alive ──
+        _extend_lease(run_id)
 
         result = _normalize_run_tradingagents_output(
             engine_result=engine_result,
@@ -1625,7 +1716,6 @@ def _run_in_background(run_id: str) -> None:
             publish_report(run_id, str(report_name), report_content)
 
         urls = _artifact_urls(run_id)
-        # Final HTML must exist before result_url and completed are published.
         _update_run(run_id, result=result, decision_ready=True)
         write_all_core_artifacts(run_id)
 
@@ -1737,6 +1827,7 @@ def _make_json_safe(value: Any) -> Any:
 
     return str(value)
 
+
 def regenerate_run_artifacts(run_id: str) -> Dict[str, Any]:
     run = get_run(run_id)
     if not run:
@@ -1748,5 +1839,6 @@ def regenerate_run_artifacts(run_id: str) -> Dict[str, Any]:
         "message": "Artifacts regenerated successfully.",
         "artifacts": _artifact_urls(run_id),
     }
+
 
 _init_db()
