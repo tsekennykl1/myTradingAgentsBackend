@@ -35,7 +35,7 @@ def _build_model_options() -> list[dict]:
     # --- Native providers (if API key is set) ---
     native = [
         ("deepseek", "DEEPSEEK_API_KEY", "DeepSeek V4 Pro", "deepseek-v4-pro", "deepseek-v4-flash"),
-        ("openai", "OPENAI_API_KEY", "GPT-5.5 (direct)", "gpt-5.5", "gpt-5.5"),
+        ("openai", "OPENAI_API_KEY", "GPT-5.6 (direct)", "gpt-5.6", "gpt-5.6-luna"),
         ("anthropic", "ANTHROPIC_API_KEY", "Claude Sonnet 5", "claude-sonnet-5", "claude-sonnet-5"),
         ("google", "GOOGLE_API_KEY", "Gemini 3.1", "gemini-3.1", "gemini-3.1"),
     ]

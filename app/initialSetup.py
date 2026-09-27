@@ -31,9 +31,9 @@ PROVIDER_MODELS = {
         "all": ["deepseek-v4-pro", "deepseek-v4-flash"],
     },
     "openai": {
-        "deep": ["gpt-5.5"],
-        "quick": ["gpt-5.5"],
-        "all": ["gpt-5.5"],
+        "deep": ["gpt-5.6"],
+        "quick": ["gpt-5.6-luna"],
+        "all": ["gpt-5.6", "gpt-5.6-luna"],
     },
     "google": {
         "deep": ["gemini-3.1"],
@@ -81,9 +81,9 @@ PROVIDER_MODELS = {
         "all": ["MiniMax-M1"],
     },
     "openrouter": {
-        "deep": ["openai/gpt-5.5"],
-        "quick": ["openai/gpt-5.5"],
-        "all": ["openai/gpt-5.5"],
+        "deep": ["openai/gpt-5.6"],
+        "quick": ["openai/gpt-5.6-luna"],
+        "all": ["openai/gpt-5.6", "openai/gpt-5.6-luna"],
     },
     "ollama": {
         "deep": [],
@@ -101,9 +101,9 @@ PROVIDER_MODELS = {
         "all": ["us.anthropic.claude-opus-4-8-v1:0"],
     },
     "azure_openai": {
-        "deep": ["gpt-5.5"],
-        "quick": ["gpt-5.5"],
-        "all": ["gpt-5.5"],
+        "deep": ["gpt-5.6"],
+        "quick": ["gpt-5.6-luna"],
+        "all": ["gpt-5.6", "gpt-5.6-luna"],
     },
 }
 
@@ -142,7 +142,7 @@ PROVIDER_ENV_MAPPING = {
 
 
 PROVIDER_DEFAULT_MODELS = {
-    "openai": ("gpt-5.5", "gpt-5.5"),
+    "openai": ("gpt-5.6", "gpt-5.6-luna"),
     "google": ("gemini-3.1", "gemini-3.1"),
     "anthropic": ("claude-sonnet-5", "claude-sonnet-5"),
     "xai": ("grok-4", "grok-4"),
@@ -153,14 +153,14 @@ PROVIDER_DEFAULT_MODELS = {
     "glm_cn": ("glm-5.3", "glm-5.3"),
     "minimax": ("MiniMax-M1", "MiniMax-M1"),
     "minimax_cn": ("MiniMax-M1", "MiniMax-M1"),
-    "openrouter": ("openai/gpt-5.5", "openai/gpt-5.5"),
+    "openrouter": ("openai/gpt-5.6", "openai/gpt-5.6-luna"),
     "ollama": ("llama3.1", "llama3.1"),
     "openai_compatible": ("custom-model", "custom-model"),
     "bedrock": (
         "us.anthropic.claude-opus-4-8-v1:0",
         "us.anthropic.claude-opus-4-8-v1:0",
     ),
-    "azure_openai": ("gpt-5.5", "gpt-5.5"),
+    "azure_openai": ("gpt-5.6", "gpt-5.6-luna"),
 }
 
 
