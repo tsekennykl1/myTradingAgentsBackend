@@ -33,6 +33,10 @@ from app.routes.models import router as models_router
 BASE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BASE_DIR / ".env")
 
+# Patch hardcoded model defaults in tradingagents library (must run after load_dotenv)
+from app.patches.tradingagents_overrides import apply_all
+apply_all()
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     from app.services.analyze_service import reconcile_incomplete_runs
