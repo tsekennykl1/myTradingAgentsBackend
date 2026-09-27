@@ -13,9 +13,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_MODEL = os.getenv("LLM_DEFAULT_MODEL", "gpt-5.6-sol")
+
 MODEL_REMAP: dict[str, str] = {
-    "gpt-5.6":       "gpt-5.5",
-    "gpt-5.6-luna":  "gpt-5.5",
+    "gpt-5.6":       _DEFAULT_MODEL,
+    "gpt-5.6-luna":  _DEFAULT_MODEL,
 }
 
 

@@ -7,8 +7,8 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
-# Each entry: { id, label, provider, deep_model, quick_model }
-# Built from AVAILABLE_MODELS env var + any natively-keyed providers.
+_DEFAULT_MODEL = os.getenv("LLM_DEFAULT_MODEL", "gpt-5.6-sol")
+
 
 def _build_model_options() -> list[dict]:
     options: list[dict] = []
@@ -35,7 +35,7 @@ def _build_model_options() -> list[dict]:
     # --- Native providers (if API key is set) ---
     native = [
         ("deepseek", "DEEPSEEK_API_KEY", "DeepSeek V4 Pro", "deepseek-v4-pro", "deepseek-v4-flash"),
-        ("openai", "OPENAI_API_KEY", "GPT-5.5 (direct)", "gpt-5.5", "gpt-5.5"),
+        ("openai", "OPENAI_API_KEY", f"GPT ({_DEFAULT_MODEL})", _DEFAULT_MODEL, _DEFAULT_MODEL),
         ("anthropic", "ANTHROPIC_API_KEY", "Claude Sonnet 5", "claude-sonnet-5", "claude-sonnet-5"),
         ("google", "GOOGLE_API_KEY", "Gemini 3.1", "gemini-3.1", "gemini-3.1"),
     ]
