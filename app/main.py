@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.mcp_server import mcp, mcp_http_app
 from app.routes import router
+from app.routes.models import router as models_router
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -108,6 +109,7 @@ async def lifespan(_: FastAPI):
 
 
 app.include_router(router)
+app.include_router(models_router)
 
 if os.getenv("MCP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}:
     app.mount("/mcp", mcp_http_app)
