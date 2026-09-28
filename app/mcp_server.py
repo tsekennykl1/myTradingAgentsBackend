@@ -30,21 +30,20 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------------
-# ★ FIX: DNS-rebinding / Host-header protection
+# ★ DNS-rebinding / Host-header protection
 #
 # The MCP SDK rejects any Host header that isn't localhost, returning HTTP 421
 # "Invalid Host header". Behind nginx the Host is the public domain, so every
 # proxied request is rejected.
 #
-# The official fix is TransportSecuritySettings (deploy docs §"Before anything
-# else: the Host allowlist"). Behind a reverse proxy that controls the Host
-# header, disabling the check entirely is the documented recommendation.
+# ── FINDING 4: Tightened — explicit allowlist first, full disable as fallback.
+#    The allowlist is stricter than enable_dns_rebinding_protection=False because
+#    it enumerates exactly which Host values are legitimate.
 #
 # Three approaches are tried, in order of preference:
-#   A. enable_dns_rebinding_protection=False  (simplest, recommended behind nginx)
-#   B. Explicit allowed_hosts / allowed_origins allowlist
-#   C. None — fallback if the SDK is too old; the AccessKeyMiddleware Host
-#      rewrite becomes the last resort
+#   A. Explicit allowed_hosts / allowed_origins allowlist  (tightest)
+#   B. enable_dns_rebinding_protection=False               (behind nginx/CloudFront)
+#   C. None — fallback if the SDK is too old; AccessKeyMiddleware Host rewrite
 #
 # All hostnames MUST be lowercase — the SDK has a known case-sensitive
 # comparison bug (python-sdk issue #3437).
@@ -55,16 +54,8 @@ _transport_security: Any = None  # Will be set below if the SDK supports it
 try:
     from mcp.server.transport_security import TransportSecuritySettings
 
-    # Approach A: Disable protection entirely (recommended behind nginx).
-    # The deploy docs say: "Behind a reverse proxy that already controls the
-    # Host header, switching the check off is the honest configuration."
+    # Approach A: Explicit allowlist (preferred — tighter than full disable).
     try:
-        _transport_security = TransportSecuritySettings(
-            enable_dns_rebinding_protection=False
-        )
-    except TypeError:
-        # Approach B: Older SDK that doesn't have enable_dns_rebinding_protection;
-        # use an explicit allowlist instead. Keep everything lowercase!
         _transport_security = TransportSecuritySettings(
             allowed_hosts=[
                 "www.myfinance5051.com",
@@ -83,6 +74,15 @@ try:
                 "http://127.0.0.1:*",
             ],
         )
+    except TypeError:
+        # Approach B: SDK doesn't support allowlist args; disable protection
+        # entirely — still safe behind nginx/CloudFront which controls Host.
+        try:
+            _transport_security = TransportSecuritySettings(
+                enable_dns_rebinding_protection=False
+            )
+        except TypeError:
+            _transport_security = None
 except ImportError:
     # Approach C: SDK has no TransportSecuritySettings at all.
     # The AccessKeyMiddleware Host rewrite below is the last-resort fallback.
@@ -112,8 +112,25 @@ STAGES = {
     "market", "social", "news", "fundamentals", "research_debate",
     "research_manager", "trader", "risk_debate", "portfolio_manager",
 }
+
+# ── FINDING 6: Strict YYYY-MM-DD format gate (date.fromisoformat accepts more)
+_DATE_STRICT = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+
+# ── FIX 3 / constant: Earliest date data providers can reasonably serve
+_MIN_ANALYSIS_DATE = date(2000, 1, 1)
+
+# ── FINDING 5: Per-process rate limiter
+# WARNING: _CREATE_CALLS lives in process memory.  If you scale to multiple
+# Uvicorn workers the effective limit becomes (limit × workers).  For a
+# single-worker academic prototype this is fine; for production, move the
+# counter to Redis or a shared SQLite row.
 _CREATE_CALLS: deque[float] = deque()
 _CREATE_LOCK = threading.Lock()
+
+# ── FIX 2: Maximum lengths for free-text create_analysis fields
+_MAX_PROVIDER_LEN = 32
+_MAX_MODEL_LEN = 128
+_MAX_LANGUAGE_LEN = 40
 
 
 def _enabled() -> bool:
@@ -246,18 +263,37 @@ def create_analysis(
     _require_tool("create_analysis")
     _check_create_rate_limit()
     symbol = _ticker(ticker)
+
+    # ── FINDING 6: Reject non-YYYY-MM-DD formats that date.fromisoformat accepts
+    analysis_date = analysis_date.strip()
+    if not _DATE_STRICT.fullmatch(analysis_date):
+        raise ToolError("analysis_date must use YYYY-MM-DD format.")
     try:
         parsed_date = date.fromisoformat(analysis_date)
     except ValueError as exc:
         raise ToolError("analysis_date must use YYYY-MM-DD.") from exc
+    # ── FIX 3: Lower-bound — data providers have no useful data before 2000
+    if parsed_date < _MIN_ANALYSIS_DATE:
+        raise ToolError(f"analysis_date must be {_MIN_ANALYSIS_DATE.isoformat()} or later.")
     if parsed_date > date.today():
         raise ToolError("analysis_date cannot be in the future.")
+
+    # ── FIX 2: Bound free-text fields so callers can't submit megabyte strings
     provider = provider.strip().lower()
     deep_model = deep_model.strip()
     quick_model = quick_model.strip()
     language = language.strip()
     if not all((provider, deep_model, quick_model, language)):
         raise ToolError("provider, deep_model, quick_model, and language are required.")
+    if len(provider) > _MAX_PROVIDER_LEN:
+        raise ToolError(f"provider must be ≤ {_MAX_PROVIDER_LEN} characters.")
+    if len(deep_model) > _MAX_MODEL_LEN:
+        raise ToolError(f"deep_model must be ≤ {_MAX_MODEL_LEN} characters.")
+    if len(quick_model) > _MAX_MODEL_LEN:
+        raise ToolError(f"quick_model must be ≤ {_MAX_MODEL_LEN} characters.")
+    if len(language) > _MAX_LANGUAGE_LEN:
+        raise ToolError(f"language must be ≤ {_MAX_LANGUAGE_LEN} characters.")
+
     chosen_analysts = analysts if analysts is not None else ["market"]
     chosen_stages = stages if stages is not None else [
         "market", "research_debate", "research_manager", "trader",
@@ -324,17 +360,24 @@ def cancel_analysis(run_id: str) -> dict[str, Any]:
     return {"run_id": run["run_id"], "status": updated.get("status"), "cancel_requested": True}
 
 
+# ── FIX 7: Added offset parameter for pagination
 @mcp.tool(title="List analyses", description="List recent analyses without returning full report bodies.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
-def list_analyses(limit: int = 20, status: str | None = None) -> dict[str, Any]:
+def list_analyses(limit: int = 20, offset: int = 0, status: str | None = None) -> dict[str, Any]:
     _require_tool("list_analyses")
     if not 1 <= limit <= 100:
         raise ToolError("limit must be between 1 and 100.")
+    if not 0 <= offset <= 10000:
+        raise ToolError("offset must be between 0 and 10 000.")
     from app.services.analyze_service import list_runs
 
     wanted = status.strip().lower() if status else None
     items = []
+    skipped = 0
     for run in list_runs():
         if wanted and str(run.get("status", "")).lower() != wanted:
+            continue
+        if skipped < offset:
+            skipped += 1
             continue
         result = run.get("result") if isinstance(run.get("result"), dict) else {}
         payload = run.get("payload") if isinstance(run.get("payload"), dict) else {}
@@ -348,7 +391,7 @@ def list_analyses(limit: int = 20, status: str | None = None) -> dict[str, Any]:
         })
         if len(items) >= limit:
             break
-    return {"items": items, "count": len(items)}
+    return {"items": items, "count": len(items), "offset": offset, "limit": limit}
 
 
 @mcp.tool(title="Get analysis", description="Read one complete stored analysis record.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
@@ -368,39 +411,45 @@ def get_analysis_status(run_id: str) -> dict[str, Any]:
     return value
 
 
+# ── FIX 5: Use run["run_id"] instead of calling _run_id() a second time
 @mcp.tool(title="Get decision", description="Read the portfolio decision for a completed or partially published analysis.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
 def get_decision(run_id: str) -> dict[str, Any]:
     _require_tool("get_decision")
-    _require_run(run_id)
+    run = _require_run(run_id)
     from app.services.analyze_service import get_run_decision
 
-    decision = get_run_decision(_run_id(run_id))
+    clean_id = run["run_id"]
+    decision = get_run_decision(clean_id)
     if decision is None:
         raise ToolError("Decision is not available yet.")
     return decision
 
 
+# ── FIX 1 + 5: Use run["run_id"] in return dict (not raw input) and avoid double _run_id()
 @mcp.tool(title="List reports", description="List report names currently published for an analysis.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
 def list_reports(run_id: str) -> dict[str, Any]:
     _require_tool("list_reports")
-    _require_run(run_id)
+    run = _require_run(run_id)
     from app.services.analyze_service import get_run_reports
 
-    reports = get_run_reports(_run_id(run_id)) or {}
-    return {"run_id": run_id, "reports": sorted(reports), "count": len(reports)}
+    clean_id = run["run_id"]
+    reports = get_run_reports(clean_id) or {}
+    return {"run_id": clean_id, "reports": sorted(reports), "count": len(reports)}
 
 
+# ── FIX 1 + 5: Use run["run_id"] in return dict (not raw input) and avoid double _run_id()
 @mcp.tool(title="Get report", description="Read one published analyst or final report by name.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
 def get_report(run_id: str, report_name: str) -> dict[str, Any]:
     _require_tool("get_report")
-    _require_run(run_id)
+    run = _require_run(run_id)
     from app.services.analyze_service import get_run_report
 
+    clean_id = run["run_id"]
     name = _report_name(report_name)
-    report = get_run_report(_run_id(run_id), name)
+    report = get_run_report(clean_id, name)
     if report is None:
         raise ToolError(f"Report '{name}' is not available.")
-    return {"run_id": run_id, "report_name": name, "content": report}
+    return {"run_id": clean_id, "report_name": name, "content": report}
 
 
 @mcp.tool(title="Get chart data", description="Read structured prices, indicators, signals, and public chart links for an analysis.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
@@ -443,15 +492,20 @@ def get_earnings(ticker: str, quarters: int = 4) -> dict[str, Any]:
     return earnings(ticker=_ticker(ticker), quarters=quarters)
 
 
+# ── FIX (prev-4): Correct authentication description in discovery output
 @mcp.tool(title="Get engine info", description="Check engine and MCP availability without revealing configuration secrets.", annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False))
 def get_engine_info() -> dict[str, Any]:
     _require_tool("get_engine_info")
     from app.services.analyze_service import engine_available
 
+    base = _public_base_url()
     return {
-        "service": "trading-analysis-api", "tradingagents_available": engine_available(),
-        "mcp_transport": "streamable-http", "mcp_endpoint": f"{_public_base_url()}/mcp",
-        "authentication": "none", "allowed_tools": sorted(_allowed_tools()),
+        "service": "trading-analysis-api",
+        "tradingagents_available": engine_available(),
+        "mcp_transport": "streamable-http",
+        "mcp_endpoint": f"{base}/mcp",
+        "authentication": "Bearer token (Authorization header) or X-MCP-Key header",
+        "allowed_tools": sorted(_allowed_tools()),
     }
 
 
@@ -470,25 +524,93 @@ def list_ai_models() -> dict[str, Any]:
     return {"active": catalogue.get("active"), "providers": safe}
 
 
+# ---------------------------------------------------------------------------
+# ── FINDING 2: Hide disabled tools from MCP tools/list
+#
+# When MCP_ENABLED=0 or MCP_ALLOWED_TOOLS restricts the set, prune tools from
+# the SDK's internal registry so clients never discover tools they can't call.
+#
+# This runs once at import time.  If MCP_ENABLED or MCP_ALLOWED_TOOLS changes
+# at runtime, restart the service for the listing to update.  The runtime gate
+# in _require_tool() always enforces the live env-var value regardless.
+# ---------------------------------------------------------------------------
+
+def _prune_disabled_tools() -> None:
+    """Remove disabled tools from the MCP tools/list response."""
+    if _enabled() and _allowed_tools() == ALL_TOOLS:
+        return  # everything active, nothing to prune
+
+    try:
+        registry = mcp._tool_manager._tools  # type: ignore[attr-defined]
+    except AttributeError:
+        _log.warning(
+            "Cannot prune disabled tools from MCP listing — "
+            "SDK internals have changed.  Disabled tools will still "
+            "appear in tools/list but reject calls at runtime."
+        )
+        return
+
+    if not _enabled():
+        registry.clear()
+        _log.info("MCP disabled (MCP_ENABLED=0) — all tools hidden from tools/list")
+        return
+
+    allowed = _allowed_tools()
+    removed = []
+    for name in list(registry.keys()):
+        if name not in allowed:
+            del registry[name]
+            removed.append(name)
+    if removed:
+        _log.info("Tools hidden from tools/list (MCP_ALLOWED_TOOLS): %s", ", ".join(sorted(removed)))
+
+
+_prune_disabled_tools()
+
+
+# ---------------------------------------------------------------------------
+# Authentication helpers
+# ---------------------------------------------------------------------------
+
 def _access_key() -> str:
     """Shared key every MCP caller must present. Empty means 'refuse everything'."""
     return os.getenv("MCP_ACCESS_KEY", "").strip()
 
 
-def _presented_key(headers: list[tuple[bytes, bytes]]) -> str:
-    """Read the caller's key from Authorization: Bearer ... or X-MCP-Key."""
+# ── FIX (prev-1): _presented_key → _extract_credentials
+# Returns (bearer, mcp_key) separately so the middleware can detect and reject
+# requests that supply BOTH headers (ambiguous / order-dependent).
+def _extract_credentials(headers: list[tuple[bytes, bytes]]) -> tuple[str | None, str | None]:
+    """Extract Bearer token and X-MCP-Key separately from ASGI headers.
+
+    Returns (bearer_token, mcp_key).  Each is None when the header is absent.
+    """
+    bearer: str | None = None
+    mcp_key: str | None = None
     for raw_name, raw_value in headers:
         name = raw_name.decode("latin-1").lower()
         value = raw_value.decode("latin-1").strip()
         if name == "x-mcp-key" and value:
-            return value
-        if name == "authorization" and value.lower().startswith("bearer "):
-            return value[7:].strip()
-    return ""
+            mcp_key = value
+        elif name == "authorization" and value.lower().startswith("bearer "):
+            token = value[7:].strip()
+            if token:
+                bearer = token
+    return bearer, mcp_key
 
 
 def _unauthorized_body(message: str) -> bytes:
     return json.dumps({"error": "unauthorized", "detail": message}).encode("utf-8")
+
+
+# ── FIX 4: Audit-log helper — best-effort client IP (prefers X-Forwarded-For)
+def _client_ip(scope: dict) -> str:
+    """Best-effort client IP from the ASGI scope."""
+    for name, value in (scope.get("headers") or []):
+        if name == b"x-forwarded-for":
+            return value.decode("latin-1").split(",")[0].strip()
+    client = scope.get("client")
+    return client[0] if client else "unknown"
 
 
 class AccessKeyMiddleware:
@@ -512,10 +634,23 @@ class AccessKeyMiddleware:
 
         expected = _access_key()
         if not expected:
+            # ── FIX 4: Audit log
+            _log.warning("MCP auth: no MCP_ACCESS_KEY configured — rejecting request from %s", _client_ip(scope))
             await self._deny(send, "This engine has no MCP_ACCESS_KEY configured, so MCP is closed.")
             return
-        presented = _presented_key(scope.get("headers") or [])
+
+        # ── FIX (prev-1/2): Extract credentials separately and reject dual-header requests
+        bearer, mcp_key = _extract_credentials(scope.get("headers") or [])
+
+        if bearer is not None and mcp_key is not None:
+            _log.warning("MCP auth: dual credentials (Authorization + X-MCP-Key) from %s", _client_ip(scope))
+            await self._reject(send, 400, "Supply only one of Authorization or X-MCP-Key, not both.")
+            return
+
+        presented = bearer or mcp_key or ""
         if not presented or not hmac.compare_digest(presented, expected):
+            # ── FIX 4: Audit log
+            _log.warning("MCP auth: invalid or missing key from %s", _client_ip(scope))
             await self._deny(send, "Missing or invalid MCP access key.")
             return
 
@@ -543,6 +678,20 @@ class AccessKeyMiddleware:
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode("ascii")),
                 (b"www-authenticate", b'Bearer realm="mcp"'),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+    # ── FIX (prev-3): Non-401 JSON error for bad requests
+    async def _reject(self, send: Any, status: int, message: str) -> None:
+        """Send a non-401 JSON error (e.g. 400 Bad Request)."""
+        body = json.dumps({"error": "bad_request", "detail": message}).encode("utf-8")
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
             ],
         })
         await send({"type": "http.response.body", "body": body})
