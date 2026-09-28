@@ -405,6 +405,10 @@ class AccessKeyMiddleware:
 
     Rejects any request without the shared key before the MCP session manager
     sees it, so an engine on a public address cannot be driven by strangers.
+
+    After authentication succeeds, the Host header is rewritten to ``localhost``
+    so the MCP SDK's built-in DNS-rebinding protection does not reject requests
+    that arrive via a reverse proxy (nginx) with a public hostname.
     """
 
     def __init__(self, app: Any) -> None:
@@ -423,6 +427,21 @@ class AccessKeyMiddleware:
         if not presented or not hmac.compare_digest(presented, expected):
             await self._deny(send, "Missing or invalid MCP access key.")
             return
+
+        # ★ FIX: Rewrite Host header to satisfy MCP SDK DNS-rebinding protection.
+        # Behind nginx the Host is the public domain (e.g. www.myfinance5051.com);
+        # the SDK only allows localhost / 127.0.0.1 by default and returns 421
+        # "Invalid Host header" for anything else.  Once the caller has proven
+        # they hold the access key we trust the request, so rewriting is safe.
+        headers = scope.get("headers") or []
+        new_headers = []
+        for name, value in headers:
+            if name == b"host":
+                new_headers.append((b"host", b"localhost"))
+            else:
+                new_headers.append((name, value))
+        scope = dict(scope, headers=new_headers)
+
         await self.app(scope, receive, send)
 
     async def _deny(self, send: Any, message: str) -> None:
