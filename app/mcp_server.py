@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import re
 import threading
@@ -27,6 +28,74 @@ from typing import Any, Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+
+# ---------------------------------------------------------------------------
+# ★ FIX: DNS-rebinding / Host-header protection
+#
+# The MCP SDK rejects any Host header that isn't localhost, returning HTTP 421
+# "Invalid Host header". Behind nginx the Host is the public domain, so every
+# proxied request is rejected.
+#
+# The official fix is TransportSecuritySettings (deploy docs §"Before anything
+# else: the Host allowlist"). Behind a reverse proxy that controls the Host
+# header, disabling the check entirely is the documented recommendation.
+#
+# Three approaches are tried, in order of preference:
+#   A. enable_dns_rebinding_protection=False  (simplest, recommended behind nginx)
+#   B. Explicit allowed_hosts / allowed_origins allowlist
+#   C. None — fallback if the SDK is too old; the AccessKeyMiddleware Host
+#      rewrite becomes the last resort
+#
+# All hostnames MUST be lowercase — the SDK has a known case-sensitive
+# comparison bug (python-sdk issue #3437).
+# ---------------------------------------------------------------------------
+
+_transport_security: Any = None  # Will be set below if the SDK supports it
+
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    # Approach A: Disable protection entirely (recommended behind nginx).
+    # The deploy docs say: "Behind a reverse proxy that already controls the
+    # Host header, switching the check off is the honest configuration."
+    try:
+        _transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    except TypeError:
+        # Approach B: Older SDK that doesn't have enable_dns_rebinding_protection;
+        # use an explicit allowlist instead. Keep everything lowercase!
+        _transport_security = TransportSecuritySettings(
+            allowed_hosts=[
+                "www.myfinance5051.com",
+                "www.myfinance5051.com:*",
+                "myfinance5051.com",
+                "myfinance5051.com:*",
+                "localhost",
+                "localhost:*",
+                "127.0.0.1",
+                "127.0.0.1:*",
+            ],
+            allowed_origins=[
+                "https://www.myfinance5051.com",
+                "https://myfinance5051.com",
+                "http://localhost:*",
+                "http://127.0.0.1:*",
+            ],
+        )
+except ImportError:
+    # Approach C: SDK has no TransportSecuritySettings at all.
+    # The AccessKeyMiddleware Host rewrite below is the last-resort fallback.
+    _transport_security = None
+
+_log = logging.getLogger(__name__)
+if _transport_security is not None:
+    _log.info("MCP transport_security configured: %s", type(_transport_security).__name__)
+else:
+    _log.warning(
+        "TransportSecuritySettings not available in this SDK; "
+        "falling back to Host-header rewrite in AccessKeyMiddleware"
+    )
 
 SERVER_NAME = "trading-agents"
 ALL_TOOLS = {
@@ -122,8 +191,17 @@ def _json_artifact(content: bytes | None, missing: str) -> Any:
         raise ToolError("The stored artifact is not valid JSON.") from exc
 
 
-mcp = FastMCP(
-    SERVER_NAME,
+# ---------------------------------------------------------------------------
+# ★ FastMCP construction
+#
+# On v1 FastMCP, transport_security belongs in the constructor.
+# On v2 MCPServer, it belongs in streamable_http_app() — but we're on v1.
+#
+# If the constructor rejects transport_security (TypeError), we fall back to
+# constructing without it and passing it to streamable_http_app() instead.
+# ---------------------------------------------------------------------------
+
+_constructor_kwargs: dict[str, Any] = dict(
     instructions=(
         "Tools for the TradingAgents financial-analysis engine. Analyses are asynchronous: "
         "call create_analysis, poll get_analysis_status using poll_after_ms, then read the "
@@ -133,6 +211,19 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
 )
+
+_transport_security_in_constructor = False
+
+if _transport_security is not None:
+    try:
+        mcp = FastMCP(SERVER_NAME, transport_security=_transport_security, **_constructor_kwargs)
+        _transport_security_in_constructor = True
+        _log.info("transport_security applied via FastMCP constructor (v1 style)")
+    except TypeError:
+        mcp = FastMCP(SERVER_NAME, **_constructor_kwargs)
+        _log.info("FastMCP constructor rejected transport_security; will try streamable_http_app()")
+else:
+    mcp = FastMCP(SERVER_NAME, **_constructor_kwargs)
 
 
 @mcp.tool(
@@ -406,9 +497,9 @@ class AccessKeyMiddleware:
     Rejects any request without the shared key before the MCP session manager
     sees it, so an engine on a public address cannot be driven by strangers.
 
-    After authentication succeeds, the Host header is rewritten to ``localhost``
-    so the MCP SDK's built-in DNS-rebinding protection does not reject requests
-    that arrive via a reverse proxy (nginx) with a public hostname.
+    When TransportSecuritySettings is unavailable (SDK too old), the middleware
+    rewrites the Host header to 'localhost' after auth succeeds as a last-resort
+    workaround for the DNS-rebinding 421 rejection.
     """
 
     def __init__(self, app: Any) -> None:
@@ -428,19 +519,18 @@ class AccessKeyMiddleware:
             await self._deny(send, "Missing or invalid MCP access key.")
             return
 
-        # ★ FIX: Rewrite Host header to satisfy MCP SDK DNS-rebinding protection.
-        # Behind nginx the Host is the public domain (e.g. www.myfinance5051.com);
-        # the SDK only allows localhost / 127.0.0.1 by default and returns 421
-        # "Invalid Host header" for anything else.  Once the caller has proven
-        # they hold the access key we trust the request, so rewriting is safe.
-        headers = scope.get("headers") or []
-        new_headers = []
-        for name, value in headers:
-            if name == b"host":
-                new_headers.append((b"host", b"localhost"))
-            else:
-                new_headers.append((name, value))
-        scope = dict(scope, headers=new_headers)
+        # ★ FALLBACK: If TransportSecuritySettings was unavailable, rewrite
+        # Host to localhost so the SDK's built-in DNS-rebinding check passes.
+        # This only activates when the proper fix could not be applied above.
+        if _transport_security is None:
+            headers = scope.get("headers") or []
+            new_headers = []
+            for name, value in headers:
+                if name == b"host":
+                    new_headers.append((b"host", b"localhost"))
+                else:
+                    new_headers.append((name, value))
+            scope = dict(scope, headers=new_headers)
 
         await self.app(scope, receive, send)
 
@@ -458,4 +548,31 @@ class AccessKeyMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-mcp_http_app = AccessKeyMiddleware(mcp.streamable_http_app())
+# ---------------------------------------------------------------------------
+# ★ Build the ASGI app
+#
+# Priority order:
+#   1. transport_security already in constructor → plain streamable_http_app()
+#   2. transport_security not in constructor → try streamable_http_app(transport_security=...)
+#   3. Neither works → streamable_http_app() with no arg, Host rewrite in middleware
+# ---------------------------------------------------------------------------
+
+if _transport_security is not None and _transport_security_in_constructor:
+    # Approach A: Already configured in the FastMCP constructor (v1 style)
+    _raw_mcp_app = mcp.streamable_http_app()
+    _log.info("MCP app built — transport_security via constructor")
+elif _transport_security is not None:
+    # Approach B: Try passing to streamable_http_app (v2 style)
+    try:
+        _raw_mcp_app = mcp.streamable_http_app(transport_security=_transport_security)
+        _log.info("MCP app built — transport_security via streamable_http_app()")
+    except TypeError:
+        _raw_mcp_app = mcp.streamable_http_app()
+        _transport_security = None  # Signal the middleware to do Host rewrite
+        _log.warning("streamable_http_app() rejected transport_security; using Host rewrite fallback")
+else:
+    # Approach C: No TransportSecuritySettings available; Host rewrite in middleware
+    _raw_mcp_app = mcp.streamable_http_app()
+    _log.warning("MCP app built — no transport_security, Host rewrite fallback active")
+
+mcp_http_app = AccessKeyMiddleware(_raw_mcp_app)
