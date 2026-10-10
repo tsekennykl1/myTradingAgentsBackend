@@ -71,14 +71,25 @@ SWAP_SIZE_MB="${SWAP_SIZE_MB:-4096}"
 # ★ NEW (Fix 8) — cleanup retention in days
 CLEANUP_RETENTION_DAYS="${CLEANUP_RETENTION_DAYS:-15}"
 
-# ── Detect package manager (AL2023 = dnf, Ubuntu = apt-get) ──
+# ── Detect package manager (AL2023 = dnf, AL2 = yum, Ubuntu = apt-get) ──
 if command -v dnf >/dev/null 2>&1; then
   PKG_MGR="dnf"
+elif command -v yum >/dev/null 2>&1; then
+  PKG_MGR="yum"
 elif command -v apt-get >/dev/null 2>&1; then
   export DEBIAN_FRONTEND=noninteractive
   PKG_MGR="apt-get"
 else
-  echo "No supported package manager found (dnf or apt-get)" >&2
+  echo "No supported package manager found (dnf, yum, or apt-get)" >&2
+  exit 1
+fi
+
+if [ "$(id -u)" -eq 0 ]; then
+  PKG_SUDO=""
+elif command -v sudo >/dev/null 2>&1; then
+  PKG_SUDO="sudo"
+else
+  echo "Package installation needs root privileges; re-run as root or install sudo" >&2
   exit 1
 fi
 
@@ -91,12 +102,16 @@ done
 if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
-    dnf install -y --allowerasing \
+    ${PKG_SUDO} dnf install -y --allowerasing \
       curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
+  elif [ "${PKG_MGR}" = "yum" ]; then
+    ${PKG_SUDO} yum install -y \
+      curl unzip python3.12 python3-pip jq \
+      gcc gcc-c++ make libpq-devel git tar
   else
-    apt-get update
-    apt-get install -y --no-install-recommends \
+    ${PKG_SUDO} apt-get update
+    ${PKG_SUDO} apt-get install -y --no-install-recommends \
       awscli curl unzip python3.12 python3-pip python3.12-venv jq \
       build-essential libpq-dev git
   fi
@@ -111,8 +126,8 @@ fi
 # AL2023 ships it pre-installed; Ubuntu may need the snap. Non-fatal.
 if ! systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
   echo "SSM Agent not active — installing/starting…"
-  if [ "${PKG_MGR}" = "dnf" ]; then
-    dnf install -y amazon-ssm-agent 2>/dev/null || true
+  if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
+    ${PKG_SUDO} "${PKG_MGR}" install -y amazon-ssm-agent 2>/dev/null || true
   else
     snap install amazon-ssm-agent --classic 2>/dev/null || true
   fi
@@ -178,13 +193,13 @@ setup_swap || echo "WARNING: Swap setup failed (non-fatal) — continuing deploy
 # ── Node.js & PM2 ─────────────────────────────────────────────
 if ! command -v node >/dev/null 2>&1; then
   echo "Installing Node.js…"
-  if [ "${PKG_MGR}" = "dnf" ]; then
-    # AL2023 ships Node 18+ in its repos — sufficient for PM2.
-    dnf install -y nodejs npm
+  if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
+    # Amazon Linux repos ship Node 18+ — sufficient for PM2.
+    ${PKG_SUDO} "${PKG_MGR}" install -y nodejs npm
   else
     # Ubuntu: pull Node 20.x LTS from NodeSource for a recent version.
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
+    ${PKG_SUDO} apt-get install -y nodejs
   fi
 fi
 
@@ -207,10 +222,10 @@ install_cloudwatch_agent() {
   # 1. Install if not already present
   if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1 \
      && [ ! -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
-    if [ "${PKG_MGR}" = "dnf" ]; then
-      dnf install -y amazon-cloudwatch-agent
+    if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
+      ${PKG_SUDO} "${PKG_MGR}" install -y amazon-cloudwatch-agent
     else
-      apt-get install -y --no-install-recommends amazon-cloudwatch-agent
+      ${PKG_SUDO} apt-get install -y --no-install-recommends amazon-cloudwatch-agent
     fi
   fi
 
@@ -302,10 +317,10 @@ pkill -f "uvicorn app.main:app" 2>/dev/null || true
 #   returns 301 or HTML, and the UI shows "Your engine is not reachable."
 # ──────────────────────────────────────────────────────────────
 if ! command -v nginx >/dev/null 2>&1; then
-  if [ "${PKG_MGR}" = "dnf" ]; then
-    dnf install -y nginx
+  if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
+    ${PKG_SUDO} "${PKG_MGR}" install -y nginx
   else
-    apt-get install -y --no-install-recommends nginx
+    ${PKG_SUDO} apt-get install -y --no-install-recommends nginx
   fi
 fi
 
@@ -610,8 +625,8 @@ chown "${SVC_USER}:${SVC_USER}" "${CLEANUP_SCRIPT}"
 # Ensure crond is running (AL2023 = cronie, Ubuntu = cron)
 # Must install BEFORE writing to /etc/cron.d/ — AL2023 does not ship cronie
 # by default, so /etc/cron.d/ may not yet exist on the first deploy.
-if [ "${PKG_MGR}" = "dnf" ]; then
-  dnf install -y cronie 2>/dev/null || true
+if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
+  ${PKG_SUDO} "${PKG_MGR}" install -y cronie 2>/dev/null || true
   systemctl enable crond 2>/dev/null || true
   systemctl start  crond 2>/dev/null || true
   CRON_SVC="crond"

@@ -42,3 +42,15 @@ def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
     # Must NOT inline the raw script content in the SSM parameters
     assert 'import base64' not in content
     assert 'base64.b64encode' not in content
+
+
+def test_bootstrap_supports_dnf_yum_and_privileged_installs():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.sh"
+    content = script.read_text()
+
+    assert 'elif command -v yum >/dev/null 2>&1; then' in content
+    assert 'PKG_MGR="yum"' in content
+    assert 'No supported package manager found (dnf, yum, or apt-get)' in content
+    assert 'Package installation needs root privileges; re-run as root or install sudo' in content
+    assert '${PKG_SUDO} "${PKG_MGR}" install -y amazon-ssm-agent' in content
+    assert '${PKG_SUDO} "${PKG_MGR}" install -y nginx' in content
