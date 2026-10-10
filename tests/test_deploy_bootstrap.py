@@ -34,7 +34,7 @@ def test_bootstrap_health_check_does_not_fail_when_only_nginx_probe_fails():
 
     assert 'BACKEND_HEALTHY=0' in content
     assert 'if [ "${BACKEND_HEALTHY}" = "1" ]; then' in content
-    assert 'direct health ✓; nginx /api/health check skipped after timeout' in content
+    assert 'nginx /api/health did not become reachable within retry window' in content
 
 
 def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():

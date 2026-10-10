@@ -782,7 +782,7 @@ for i in $(seq 1 30); do
 done
 
 if [ "${BACKEND_HEALTHY}" = "1" ]; then
-  echo "Backend healthy on release ${RELEASE_SHA} (direct health ✓; nginx /api/health check skipped after timeout)."
+  echo "WARNING: Backend healthy on release ${RELEASE_SHA} (direct health ✓; nginx /api/health did not become reachable within retry window)." >&2
   exit 0
 fi
 
