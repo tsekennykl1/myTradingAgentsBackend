@@ -82,6 +82,27 @@ else
   exit 1
 fi
 
+# ── Retry helper for transient network/package failures ─────────
+retry_cmd() {
+  local attempts="${RETRY_MAX_ATTEMPTS:-3}"
+  local delay="${RETRY_INITIAL_DELAY_SECONDS:-3}"
+  local try=1
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "${try}" -ge "${attempts}" ]; then
+      echo "Command failed after ${attempts} attempts: $*" >&2
+      return 1
+    fi
+    echo "Command failed (attempt ${try}/${attempts}): $* — retrying in ${delay}s" >&2
+    sleep "${delay}"
+    try=$(( try + 1 ))
+    delay=$(( delay * 2 ))
+  done
+}
+
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
 for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
@@ -91,12 +112,12 @@ done
 if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
-    dnf install -y --allowerasing \
+    retry_cmd dnf install -y --allowerasing \
       curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
-    apt-get update
-    apt-get install -y --no-install-recommends \
+    retry_cmd apt-get update
+    retry_cmd apt-get install -y --no-install-recommends \
       awscli curl unzip python3.12 python3-pip python3.12-venv jq \
       build-essential libpq-dev git
   fi
@@ -501,15 +522,15 @@ if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
   }
 fi
 
-"${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
-"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
+retry_cmd "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
+retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
 
 # ★ NEW (Fix 5) — Install tradingagents from GitHub (pinned tag) ─────
 #   The PyPI package either doesn't exist or lags behind the GitHub repo.
 #   Installed AFTER requirements.txt so it wins over any transitive dep.
 #   Bump TA_TAG (e.g. to v0.5.0) via env var — no code edit required.
 echo "Installing tradingagents from ${TA_REPO} @ ${TA_TAG} …"
-"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
+retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
   "tradingagents @ git+${TA_REPO}@${TA_TAG}"
 
 TA_VERSION=$("${APP_ROOT}/.venv/bin/pip" show tradingagents 2>/dev/null \

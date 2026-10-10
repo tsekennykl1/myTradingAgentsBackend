@@ -42,3 +42,13 @@ def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
     # Must NOT inline the raw script content in the SSM parameters
     assert 'import base64' not in content
     assert 'base64.b64encode' not in content
+
+
+def test_bootstrap_retries_transient_install_failures():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.sh"
+    content = script.read_text()
+
+    assert 'retry_cmd()' in content
+    assert 'retry_cmd dnf install -y --allowerasing' in content
+    assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel' in content
+    assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \\' in content
