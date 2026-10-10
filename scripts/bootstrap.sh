@@ -105,6 +105,8 @@ retry_cmd() {
     delay=$(( delay * 2 ))
     attempt=$(( attempt + 1 ))
   done
+
+  return 1
 }
 
 # ── System packages ──────────────────────────────────────────
@@ -120,10 +122,7 @@ if [ "$NEED_INSTALL" = true ]; then
       curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
-    retry_cmd apt-get update
-    retry_cmd apt-get install -y --no-install-recommends \
-      awscli curl unzip python3.12 python3-pip python3.12-venv jq \
-      build-essential libpq-dev git
+    retry_cmd bash -c "apt-get update && apt-get install -y --no-install-recommends awscli curl unzip python3.12 python3-pip python3.12-venv jq build-essential libpq-dev git"
   fi
 fi
 
