@@ -780,7 +780,7 @@ for i in $(seq 1 30); do
 done
 
 if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
-  echo "WARNING: Backend healthy on release ${RELEASE_SHA} (direct health ✓; nginx /api/health did not become reachable within retry window)." >&2
+  echo "WARNING: Backend healthy on release ${RELEASE_SHA} (direct health OK; nginx /api/health did not become reachable within retry window)." >&2
   exit 0
 fi
 
