@@ -42,6 +42,7 @@
 #     FastAPI's root "/" which has no handler (404).  /api/health hits the
 #     prefix-match "location /api/" which strips to /health → 200 OK.
 # Idempotent — safe to re-run.
+#
 set -euxo pipefail
 
 # ── Configuration ─────────────────────────────────────────────
