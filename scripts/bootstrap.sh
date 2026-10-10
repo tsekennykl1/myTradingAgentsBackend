@@ -144,10 +144,10 @@ setup_swap() {
   echo "Configuring ${SWAP_SIZE_MB} MB swap …"
 
   # Check available disk space (need SWAP_SIZE_MB + 500 MB headroom)
-  AVAIL_MB=\((df -m / | awk 'NR==2 {print \)4}')
+  AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
   NEED_MB=$(( SWAP_SIZE_MB + 500 ))
-  if [ "\({AVAIL_MB}" -lt "\){NEED_MB}" ]; then
-    echo "WARNING: Only \({AVAIL_MB} MB free on /; need \){NEED_MB} MB." >&2
+  if [ "${AVAIL_MB}" -lt "${NEED_MB}" ]; then
+    echo "WARNING: Only ${AVAIL_MB} MB free on /; need ${NEED_MB} MB." >&2
     echo "WARNING: Skipping swap creation to avoid filling disk." >&2
     return 1
   fi
@@ -158,7 +158,7 @@ setup_swap() {
     rm -f "${SWAPFILE}"
   fi
 
-  dd if=/dev/zero of="\({SWAPFILE}" bs=1M count="\){SWAP_SIZE_MB}"
+  dd if=/dev/zero of="${SWAPFILE}" bs=1M count="${SWAP_SIZE_MB}"
   chmod 600 "${SWAPFILE}"
   mkswap "${SWAPFILE}"
   swapon "${SWAPFILE}"
@@ -200,7 +200,7 @@ if ! command -v pm2 >/dev/null 2>&1; then
 fi
 
 PM2_BIN="$(command -v pm2)"
-echo "PM2 \(("\){PM2_BIN}" --version) at ${PM2_BIN}"
+echo "PM2 $("${PM2_BIN}" --version) at ${PM2_BIN}"
 
 # ── CloudWatch Agent — RAM + disk monitoring ──────────────────
 # Installs the agent on first boot, writes a fresh config on every deploy,
@@ -243,7 +243,7 @@ install_cloudwatch_agent() {
 CW_EOF
 
   # 3. (Re)start the agent with the new config
-  "\({CW_CTL}" -a fetch-config -m ec2 -c "file:\){CW_CFG}" -s
+  "${CW_CTL}" -a fetch-config -m ec2 -c "file:${CW_CFG}" -s
 
   # 4. Verify
   if systemctl is-active --quiet amazon-cloudwatch-agent; then
@@ -262,8 +262,8 @@ if ! id "${SVC_USER}" >/dev/null 2>&1; then
 elif [ ! -d "/home/${SVC_USER}" ]; then
   # User already exists from the old systemd bootstrap but had no home dir.
   mkdir -p "/home/${SVC_USER}"
-  chown "\({SVC_USER}:\){SVC_USER}" "/home/${SVC_USER}"
-  usermod --home "/home/\({SVC_USER}" --shell /bin/bash "\){SVC_USER}"
+  chown "${SVC_USER}:${SVC_USER}" "/home/${SVC_USER}"
+  usermod --home "/home/${SVC_USER}" --shell /bin/bash "${SVC_USER}"
 fi
 SVC_HOME="/home/${SVC_USER}"
 
@@ -273,11 +273,11 @@ SVC_HOME="/home/${SVC_USER}"
 #   durable, least-privilege solution (group-readable 640 instead of
 #   world-readable 644).
 if id "${DEPLOY_USER}" >/dev/null 2>&1; then
-  if ! id -nG "\({DEPLOY_USER}" | grep -qw "\){SVC_USER}"; then
-    usermod -aG "\({SVC_USER}" "\){DEPLOY_USER}"
-    echo "Added \({DEPLOY_USER} to group \){SVC_USER} ✓"
+  if ! id -nG "${DEPLOY_USER}" | grep -qw "${SVC_USER}"; then
+    usermod -aG "${SVC_USER}" "${DEPLOY_USER}"
+    echo "Added ${DEPLOY_USER} to group ${SVC_USER} ✓"
   else
-    echo "\({DEPLOY_USER} already in group \){SVC_USER} ✓"
+    echo "${DEPLOY_USER} already in group ${SVC_USER} ✓"
   fi
 fi
 
@@ -381,7 +381,7 @@ BLOCK
 }
 
 # Named domain
-nginx_server_block "\({NGINX_DOMAIN} www.\){NGINX_DOMAIN}" \
+nginx_server_block "${NGINX_DOMAIN} www.${NGINX_DOMAIN}" \
   > /etc/nginx/conf.d/myfinance.conf
 
 # Catch-all (direct IP, ALB health checks, etc.)
@@ -401,22 +401,22 @@ systemctl enable nginx
 systemctl restart nginx
 
 # ── Stop running PM2 app BEFORE replacing code ────────────────
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" delete "${PM2_APP_NAME}" 2>/dev/null || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" delete "${PM2_APP_NAME}" 2>/dev/null || true
 
 # ── Deploy application code ──────────────────────────────────
-mkdir -p "\({APP_ROOT}" "\){APP_ROOT}/data" "\({APP_ROOT}/artifacts" "\){APP_ROOT}/logs"
+mkdir -p "${APP_ROOT}" "${APP_ROOT}/data" "${APP_ROOT}/artifacts" "${APP_ROOT}/logs"
 
-aws s3 cp "s3://\({CODE_BUCKET}/\){RELEASE_FILE}" /tmp/current-release.txt
+aws s3 cp "s3://${CODE_BUCKET}/${RELEASE_FILE}" /tmp/current-release.txt
 RELEASE_SHA="$(tr -d '\r\n' < /tmp/current-release.txt)"
 
-aws s3 cp "s3://\({CODE_BUCKET}/releases/\){RELEASE_SHA}/backend.zip" /tmp/backend.zip || {
+aws s3 cp "s3://${CODE_BUCKET}/releases/${RELEASE_SHA}/backend.zip" /tmp/backend.zip || {
   echo "Missing release artifact for SHA ${RELEASE_SHA}" >&2
   exit 1
 }
 
 # Clear previous code but keep data/, artifacts/, logs/ and .env
 rm -rf "${APP_ROOT}/app"
-rm -f "\({APP_ROOT}/requirements.txt" "\){APP_ROOT}/requirements-dev.txt" \
+rm -f "${APP_ROOT}/requirements.txt" "${APP_ROOT}/requirements-dev.txt" \
       "${APP_ROOT}/mcp_server.py"
 
 unzip -o /tmp/backend.zip -d "${APP_ROOT}"
@@ -436,8 +436,8 @@ fi
 # script start-backend.sh below sources this file before exec-ing uvicorn.
 ENV_PATH="${APP_ROOT}/.env"
 TMP_ENV_PATH="/tmp/deploy-env.$$"
-if aws s3 cp "s3://\({CONFIG_BUCKET}/config/.env" "\){TMP_ENV_PATH}"; then
-  mv "\({TMP_ENV_PATH}" "\){ENV_PATH}"
+if aws s3 cp "s3://${CONFIG_BUCKET}/config/.env" "${TMP_ENV_PATH}"; then
+  mv "${TMP_ENV_PATH}" "${ENV_PATH}"
   echo "Loaded .env from s3://${CONFIG_BUCKET}/config/.env"
 elif [ -f "${ENV_PATH}" ]; then
   rm -f "${TMP_ENV_PATH}"
@@ -457,7 +457,7 @@ fi
 #    the provider prefix (deepseek/...).
 #    ONLY runs when the .env actually uses provider=deepseek.
 #    Skipped for openai_compatible, openrouter, ollama, etc.
-ENV_PROVIDER=\((grep '^TRADINGAGENTS_LLM_PROVIDER=' "\){ENV_PATH}" 2>/dev/null \
+ENV_PROVIDER=$(grep '^TRADINGAGENTS_LLM_PROVIDER=' "${ENV_PATH}" 2>/dev/null \
   | head -1 | cut -d= -f2 | tr -d '"'"'" | xargs)
 
 if [ "${ENV_PROVIDER}" = "deepseek" ]; then
@@ -474,7 +474,7 @@ fi
 #    Fixes "Permission denied: '.env'" when the file was created with sudo/root.
 # ★ NEW — mode 640 (was 600) so DEPLOY_USER (now in the SVC_USER group)
 #   can also read .env for debugging without needing world-readable 644.
-chown "\({SVC_USER}:\){SVC_USER}" "${ENV_PATH}"
+chown "${SVC_USER}:${SVC_USER}" "${ENV_PATH}"
 chmod 640 "${ENV_PATH}"
 
 # ── Python virtual environment and dependencies ──────────────
@@ -487,14 +487,14 @@ fi
 VENV_MAJOR=""
 VENV_MINOR=""
 if [ -x "${APP_ROOT}/.venv/bin/python3" ]; then
-  VENV_MAJOR="\(("\){APP_ROOT}/.venv/bin/python3" -c \
+  VENV_MAJOR="$("${APP_ROOT}/.venv/bin/python3" -c \
     'import sys; print(sys.version_info.major)' 2>/dev/null || true)"
-  VENV_MINOR="\(("\){APP_ROOT}/.venv/bin/python3" -c \
+  VENV_MINOR="$("${APP_ROOT}/.venv/bin/python3" -c \
     'import sys; print(sys.version_info.minor)' 2>/dev/null || true)"
 
-  if [ -n "\({VENV_MAJOR}" ] && [ -n "\){VENV_MINOR}" ] && \
-     { [ "\({VENV_MAJOR}" -lt 3 ] || { [ "\){VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
-    echo "Existing venv uses Python \({VENV_MAJOR}.\){VENV_MINOR} (< 3.12); recreating venv…"
+  if [ -n "${VENV_MAJOR}" ] && [ -n "${VENV_MINOR}" ] && \
+     { [ "${VENV_MAJOR}" -lt 3 ] || { [ "${VENV_MAJOR}" = "3" ] && [ "${VENV_MINOR}" -lt 12 ]; }; }; then
+    echo "Existing venv uses Python ${VENV_MAJOR}.${VENV_MINOR} (< 3.12); recreating venv…"
     rm -rf "${APP_ROOT}/.venv"
   fi
 fi
@@ -507,17 +507,17 @@ if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
 fi
 
 "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
-"\({APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "\){APP_ROOT}/requirements.txt"
+"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
 
 # ★ NEW (Fix 5) — Install tradingagents from GitHub (pinned tag) ─────
 #   The PyPI package either doesn't exist or lags behind the GitHub repo.
 #   Installed AFTER requirements.txt so it wins over any transitive dep.
 #   Bump TA_TAG (e.g. to v0.5.0) via env var — no code edit required.
-echo "Installing tradingagents from \({TA_REPO} @ \){TA_TAG} …"
+echo "Installing tradingagents from ${TA_REPO} @ ${TA_TAG} …"
 "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
-  "tradingagents @ git+\({TA_REPO}@\){TA_TAG}"
+  "tradingagents @ git+${TA_REPO}@${TA_TAG}"
 
-TA_VERSION=\(("\){APP_ROOT}/.venv/bin/pip" show tradingagents 2>/dev/null \
+TA_VERSION=$("${APP_ROOT}/.venv/bin/pip" show tradingagents 2>/dev/null \
   | grep -i '^Version:' | awk '{print $2}' || echo "unknown")
 echo "tradingagents ${TA_VERSION} installed ✓"
 
@@ -525,7 +525,7 @@ echo "tradingagents ${TA_VERSION} installed ✓"
 #   requirements.txt pins >=1.5 but a stale pip cache could still serve
 #   an old wheel.  Hard-fail the deploy so the 401 bug never ships.
 echo "Verifying yfinance version …"
-YF_VERSION=\(("\){APP_ROOT}/.venv/bin/pip" show yfinance 2>/dev/null \
+YF_VERSION=$("${APP_ROOT}/.venv/bin/pip" show yfinance 2>/dev/null \
   | grep -i '^Version:' | awk '{print $2}')
 
 if [ -z "${YF_VERSION}" ]; then
@@ -533,18 +533,18 @@ if [ -z "${YF_VERSION}" ]; then
   exit 1
 fi
 
-YF_MAJOR=\((echo "\){YF_VERSION}" | cut -d. -f1)
-YF_MINOR=\((echo "\){YF_VERSION}" | cut -d. -f2)
+YF_MAJOR=$(echo "${YF_VERSION}" | cut -d. -f1)
+YF_MINOR=$(echo "${YF_VERSION}" | cut -d. -f2)
 
-if [ "\({YF_MAJOR}" -lt "\){MIN_YF_MAJOR}" ] || \
-   { [ "\({YF_MAJOR}" -eq "\){MIN_YF_MAJOR}" ] && [ "\({YF_MINOR}" -lt "\){MIN_YF_MINOR}" ]; }; then
-  echo "yfinance \({YF_VERSION} is too old (need >= \){MIN_YF_MAJOR}.${MIN_YF_MINOR})." >&2
+if [ "${YF_MAJOR}" -lt "${MIN_YF_MAJOR}" ] || \
+   { [ "${YF_MAJOR}" -eq "${MIN_YF_MAJOR}" ] && [ "${YF_MINOR}" -lt "${MIN_YF_MINOR}" ]; }; then
+  echo "yfinance ${YF_VERSION} is too old (need >= ${MIN_YF_MAJOR}.${MIN_YF_MINOR})." >&2
   echo "The 401 'Invalid Crumb' bug is present in older releases." >&2
   echo "Try:  pip install --upgrade --no-cache-dir yfinance" >&2
   exit 1
 fi
 
-echo "yfinance \({YF_VERSION} ✓ (>= \){MIN_YF_MAJOR}.${MIN_YF_MINOR}, crumb fix included)"
+echo "yfinance ${YF_VERSION} ✓ (>= ${MIN_YF_MAJOR}.${MIN_YF_MINOR}, crumb fix included)"
 
 # ── Daily cleanup cron job (Fix 8 — prevent disk fill) ───────
 # Deletes files older than CLEANUP_RETENTION_DAYS from directories that
@@ -610,7 +610,7 @@ fi
 CLEANUP_EOF
 
 chmod +x "${CLEANUP_SCRIPT}"
-chown "\({SVC_USER}:\){SVC_USER}" "${CLEANUP_SCRIPT}"
+chown "${SVC_USER}:${SVC_USER}" "${CLEANUP_SCRIPT}"
 
 # Ensure crond is running (AL2023 = cronie, Ubuntu = cron)
 # Must install BEFORE writing to /etc/cron.d/ — AL2023 does not ship cronie
@@ -638,13 +638,13 @@ cat > "${CRON_FILE}" <<CRON_EOF
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
 
-17 3 * * * \({SVC_USER} \){CLEANUP_SCRIPT} 2>&1 | logger -t mytradingagents-cleanup
+17 3 * * * ${SVC_USER} ${CLEANUP_SCRIPT} 2>&1 | logger -t mytradingagents-cleanup
 CRON_EOF
 
 chmod 644 "${CRON_FILE}"
 
 if systemctl is-active --quiet "${CRON_SVC}" 2>/dev/null; then
-  echo "Cleanup cron job installed ✓ (\({CRON_FILE}, retention=\){CLEANUP_RETENTION_DAYS}d)"
+  echo "Cleanup cron job installed ✓ (${CRON_FILE}, retention=${CLEANUP_RETENTION_DAYS}d)"
 else
   echo "WARNING: cron daemon (${CRON_SVC}) not running — cleanup job will not fire" >&2
 fi
@@ -655,7 +655,7 @@ fi
 cat > "${APP_ROOT}/start-backend.sh" <<'WRAPPER_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_DIR="\((cd "\)(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}"
 
 # Load runtime secrets / config from .env
@@ -692,25 +692,25 @@ module.exports = {
 EOF
 
 # ── Fix ownership (whole app dir belongs to the service user) ──
-chown -R "\({SVC_USER}:\){SVC_USER}" "${APP_ROOT}"
+chown -R "${SVC_USER}:${SVC_USER}" "${APP_ROOT}"
 
 # ── Launch via PM2 ────────────────────────────────────────────
 sudo -u "${SVC_USER}" bash -c \
-  "cd \({APP_ROOT} && \){PM2_BIN} start ecosystem.config.cjs"
+  "cd ${APP_ROOT} && ${PM2_BIN} start ecosystem.config.cjs"
 
 # ── Boot persistence (pm2 startup + save) ─────────────────────
 # This creates /etc/systemd/system/pm2-${SVC_USER}.service which runs
 # `pm2 resurrect` on boot, bringing back every saved process.
-env PATH="\(PATH" "\){PM2_BIN}" startup systemd \
-  -u "\({SVC_USER}" --hp "\){SVC_HOME}" \
+env PATH="$PATH" "${PM2_BIN}" startup systemd \
+  -u "${SVC_USER}" --hp "${SVC_HOME}" \
   --service-name "pm2-${SVC_USER}"
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" save
+sudo -u "${SVC_USER}" "${PM2_BIN}" save
 
 # ── Log rotation module ───────────────────────────────────────
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" install pm2-logrotate 2>/dev/null || true
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" set pm2-logrotate:max_size  10M  2>/dev/null || true
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" set pm2-logrotate:retain    10   2>/dev/null || true
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" set pm2-logrotate:compress  true 2>/dev/null || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" install pm2-logrotate 2>/dev/null || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" set pm2-logrotate:max_size  10M  2>/dev/null || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" set pm2-logrotate:retain    10   2>/dev/null || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" set pm2-logrotate:compress  true 2>/dev/null || true
 
 # ── Cleanup temp files ───────────────────────────────────────
 rm -f /tmp/backend.zip /tmp/current-release.txt
@@ -718,9 +718,9 @@ rm -f /tmp/backend.zip /tmp/current-release.txt
 # ── Diagnostics ───────────────────────────────────────────────
 sleep 8
 echo "=== PM2 process list ==="
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" list
+sudo -u "${SVC_USER}" "${PM2_BIN}" list
 echo "=== PM2 logs (last 60 lines) ==="
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" logs --nostream --lines 60 || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" logs --nostream --lines 60 || true
 # ★ NEW — print installed package versions for deploy audit trail
 echo "=== Key Python packages ==="
 "${APP_ROOT}/.venv/bin/pip" show yfinance tradingagents 2>/dev/null \
@@ -773,6 +773,6 @@ done
 
 # Dump more logs on failure to help debug
 echo "=== PM2 logs on failure (last 100 lines) ==="
-sudo -u "\({SVC_USER}" "\){PM2_BIN}" logs --nostream --lines 100 || true
+sudo -u "${SVC_USER}" "${PM2_BIN}" logs --nostream --lines 100 || true
 echo "Backend did not become healthy after bootstrap." >&2
 exit 1
