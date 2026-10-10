@@ -86,12 +86,12 @@ fi
 retry_cmd() {
   local attempts="${RETRY_MAX_ATTEMPTS:-3}"
   local delay="${RETRY_INITIAL_DELAY_SECONDS:-3}"
-  local attempt
+  local attempt=1
   if [ "${attempts}" -lt 1 ]; then
     attempts=1
   fi
 
-  for attempt in $(seq 1 "${attempts}"); do
+  while [ "${attempt}" -le "${attempts}" ]; do
     if "$@"; then
       return 0
     fi
@@ -103,6 +103,7 @@ retry_cmd() {
     echo "Retrying in ${delay}s..." >&2
     sleep "${delay}"
     delay=$(( delay * 2 ))
+    attempt=$(( attempt + 1 ))
   done
 }
 
