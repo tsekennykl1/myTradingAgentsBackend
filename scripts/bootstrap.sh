@@ -39,8 +39,11 @@
 #     cleanup script on every deploy.
 #   • ★ FIX (Fix 9): Health check now verifies /api/health through nginx
 #     instead of /api.  The exact-match "location = /api" proxies to
-#     FastAPI's root "/" which has no handler (404).  /api/health hits the
-#     prefix-match "location /api/" which strips to /health → 200 OK.
+#     FastAPI's /health endpoint so the frontend engine status check also
+#     returns 200 OK.
+#   • ★ FIX (Fix 10): "location = /api" proxy_pass changed from "/" to
+#     "/health".  FastAPI has no handler on "/" (404).  The frontend pings
+#     /api to check engine reachability — proxying to /health returns 200.
 # Idempotent — safe to re-run.
 #
 set -euxo pipefail
@@ -305,6 +308,10 @@ pkill -f "uvicorn app.main:app" 2>/dev/null || true
 #   Without the exact-match block, nginx's "location /api/" does NOT match
 #   "/api" — the request falls through to the SPA on port 3000, which
 #   returns 301 or HTML, and the UI shows "Your engine is not reachable."
+#
+# ★ FIX (Fix 10): proxy_pass in "location = /api" changed from "/" to
+#   "/health".  FastAPI has no root "/" handler → 404.  The frontend pings
+#   /api to determine engine liveness, so it must return 200.
 # ──────────────────────────────────────────────────────────────
 if ! command -v nginx >/dev/null 2>&1; then
   if [ "${PKG_MGR}" = "dnf" ]; then
@@ -323,11 +330,11 @@ server {
     listen 80;
     server_name ${SERVER_NAME_DIRECTIVE};
 
-    # ── FIX: exact /api (no trailing slash) ──────────────────
-    # Frontend pings /api for engine status.  "location /api/"
-    # does NOT match "/api" — without this the check hits the SPA.
+    # ── FIX 10: exact /api → /health ────────────────────────
+    # Frontend pings /api for engine status.  FastAPI has no
+    # handler on "/" (404), so we proxy to /health instead.
     location = /api {
-        proxy_pass             http://127.0.0.1:${BACKEND_PORT}/;
+        proxy_pass             http://127.0.0.1:${BACKEND_PORT}/health;
         proxy_http_version     1.1;
         proxy_set_header       Host              \$host;
         proxy_set_header       X-Real-IP         \$remote_addr;
@@ -757,8 +764,9 @@ grep '^TRADINGAGENTS_LLM_PROVIDER=' "${APP_ROOT}/.env" 2>/dev/null || echo "  (n
 
 # ── Health check loop (up to 150 seconds) ────────────────────
 # ★ FIX (Fix 9): Check /api/health through nginx instead of /api.
-#   "location = /api" proxies to FastAPI's root "/" which has no handler → 404.
 #   "location /api/" (prefix match) strips the prefix, so /api/health → /health → 200.
+# ★ FIX (Fix 10): "location = /api" now also proxies to /health, so both
+#   the bootstrap check AND the frontend engine status check return 200.
 for i in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
     if curl -fsS "http://127.0.0.1/api/health" >/dev/null 2>&1; then
