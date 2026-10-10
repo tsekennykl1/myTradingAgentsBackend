@@ -65,4 +65,5 @@ def test_deploy_workflow_persists_ssm_output_to_s3():
     assert '--output-s3-key-prefix "${SSM_LOG_PREFIX}"' in content
     assert '--query \'StandardOutputUrl\' --output text' in content
     assert '--query \'StandardErrorUrl\' --output text' in content
+    assert 'SSM full output path prefix: s3://${BUCKET}/${SSM_LOG_PREFIX}/${CMD_ID}/' in content
     assert 'SSM full output path prefix: s3://${BUCKET}/${LOG_PREFIX}/${CMD_ID}/' in content
