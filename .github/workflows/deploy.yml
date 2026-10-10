@@ -108,6 +108,7 @@ jobs:
               f"export SERVICE_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
               f"export PM2_APP_NAME={shlex.quote(os.environ['SERVICE_NAME'])}",
               f"aws s3 cp s3://{os.environ['BUCKET']}/scripts/bootstrap.sh /tmp/bootstrap.sh",
+              "sed -i 's/\\r$//' /tmp/bootstrap.sh",
               "chmod +x /tmp/bootstrap.sh",
               "bash /tmp/bootstrap.sh",
           ]
