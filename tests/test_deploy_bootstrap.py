@@ -32,8 +32,7 @@ def test_bootstrap_health_check_does_not_fail_when_only_nginx_probe_fails():
     script = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.sh"
     content = script.read_text()
 
-    assert 'BACKEND_HEALTHY=0' in content
-    assert 'if [ "${BACKEND_HEALTHY}" = "1" ]; then' in content
+    assert 'if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then' in content
     assert 'nginx /api/health did not become reachable within retry window' in content
 
 

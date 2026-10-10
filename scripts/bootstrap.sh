@@ -767,11 +767,8 @@ grep '^TRADINGAGENTS_LLM_PROVIDER=' "${APP_ROOT}/.env" 2>/dev/null || echo "  (n
 #   "location /api/" (prefix match) strips the prefix, so /api/health → /health → 200.
 # ★ FIX (Fix 10): "location = /api" now also proxies to /health, so both
 #   the bootstrap check AND the frontend engine status check return 200.
-BACKEND_HEALTHY=0
 for i in $(seq 1 30); do
-  BACKEND_HEALTHY=0
   if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
-    BACKEND_HEALTHY=1
     if curl -fsS "http://127.0.0.1/api/health" >/dev/null 2>&1; then
       echo "Backend healthy on release ${RELEASE_SHA} (direct + nginx /api/health route ✓)."
       exit 0
@@ -782,7 +779,7 @@ for i in $(seq 1 30); do
   sleep 5
 done
 
-if [ "${BACKEND_HEALTHY}" = "1" ]; then
+if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
   echo "WARNING: Backend healthy on release ${RELEASE_SHA} (direct health ✓; nginx /api/health did not become reachable within retry window)." >&2
   exit 0
 fi
