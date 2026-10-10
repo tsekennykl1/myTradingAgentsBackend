@@ -95,8 +95,9 @@ retry_cmd() {
     if "$@"; then
       return 0
     fi
+    echo "Command failed (attempt ${attempt}/${attempts}): $*" >&2
     if [ "${attempt}" -lt "${attempts}" ]; then
-      echo "Command failed (attempt ${attempt}/${attempts}): $* - retrying in ${delay}s" >&2
+      echo "Retrying in ${delay}s..." >&2
       sleep "${delay}"
       delay=$(( delay * 2 ))
     fi
