@@ -1,18 +1,18 @@
 name: Deploy backend to S3 + EC2 (PM2)
 
-# ★ PM2 CHANGE — What changed vs. the systemd version:
-#   • The zip now excludes node_modules/ and logs/ in addition to the
-#     previous exclusions (neither should ever be shipped).
-#   • The SSM bootstrap command is identical — bootstrap.sh itself handles
-#     the systemd→PM2 migration and all PM2 setup.
-#   • All other steps are unchanged; the health-check still runs inside
-#     bootstrap.sh and the SSM wait loop picks up success/failure.
-#
-# ★ NEW — bootstrap.sh now also handles (no deploy.yml changes needed):
-#   • Fix 4: yfinance >= 1.5 verified (401 "Invalid Crumb")
-#   • Fix 5: tradingagents installed from GitHub @ pinned tag
-#   • .env mode 640 + deploy user in service group (replaces manual chmod 644)
-#   • Key package versions printed in diagnostics for audit trail
+# ──────────────────────────────────────────────────────────────
+# Changes vs. previous version:
+#   • FIX 1: SSM send-command now writes full stdout/stderr to S3
+#     (--output-s3-bucket-name / --output-s3-key-prefix) so the
+#     24 KB console truncation no longer hides the real error.
+#   • FIX 2: New "Fetch full SSM logs from S3" step runs on
+#     failure and prints the complete output in the Actions UI.
+#   • FIX 3: --timeout-seconds on SSM matches the wait loop
+#     (600s) so there's no orphaned-command window.
+#   • FIX 4: Wait loop prints a clear message if it exhausts
+#     all iterations without reaching a terminal status.
+#   • Cosmetic: steps have clearer names and comments.
+# ──────────────────────────────────────────────────────────────
 
 on:
   push:
@@ -42,11 +42,10 @@ jobs:
           # Preferred: OIDC role (no long-lived keys).
           #role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          # If you use access keys instead, delete role-to-assume above and use:
+          # Access-key fallback:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      # ★ PM2 CHANGE — added node_modules/ and logs/ to exclusion list
       - name: Package backend
         run: |
           set -euo pipefail
@@ -54,18 +53,19 @@ jobs:
             -x '.git/*' '.github/*' '.venv/*' 'node_modules/*' \
                '**/__pycache__/*' '*.pyc' \
                'data/*' 'artifacts/*' 'logs/*' '.env'
-          unzip -l backend.zip | tail -n 5
+          echo "--- Archive contents (last 10 lines) ---"
+          unzip -l backend.zip | tail -n 10
 
       - name: Upload release to S3
         run: |
           set -euo pipefail
           SHA="${GITHUB_SHA}"
+
           aws s3 cp backend.zip "s3://${BUCKET}/releases/${SHA}/backend.zip"
           printf '%s' "${SHA}" > release.txt
           aws s3 cp release.txt "s3://${BUCKET}/current/release.txt"
+
           # Keep bootstrap.sh on S3 in sync with the repo copy.
-          # The SSM step downloads it from S3 to avoid the 16 KB SSM per-command size limit
-          # (bootstrap.sh is ~15 KB raw / ~20 KB base64, which exceeds the per-command limit).
           if [ ! -f scripts/bootstrap.sh ]; then
             echo "scripts/bootstrap.sh not found in workspace — cannot deploy" >&2
             exit 1
@@ -84,15 +84,22 @@ jobs:
             echo "APP_ENV_B64 secret not set; skipping .env upload (bootstrap will use fallback)"
           fi
 
+      # ────────────────────────────────────────────────────────
+      # FIX 1: --output-s3-bucket-name sends FULL stdout/stderr
+      #        to S3 so the 24 KB SSM console limit never hides
+      #        the real error again.
+      # FIX 3: --timeout-seconds 600 matches the wait loop below.
+      # ────────────────────────────────────────────────────────
       - name: Trigger deployment on EC2 via SSM
         id: ssm
         run: |
           set -euo pipefail
-          python - <<'PY' > /tmp/ssm-commands.json
-          import json
-          import os
-          import shlex
 
+          SSM_LOG_PREFIX="ssm-logs/${GITHUB_SHA}"
+          echo "ssm_log_prefix=${SSM_LOG_PREFIX}" >> "$GITHUB_OUTPUT"
+
+          python3 - <<'PY' > /tmp/ssm-commands.json
+          import json, os, shlex
           commands = [
               "set -euxo pipefail",
               f"export APP_ROOT={shlex.quote(os.environ['APP_ROOT'])}",
@@ -106,34 +113,101 @@ jobs:
           ]
           print(json.dumps({"commands": commands}))
           PY
+
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${GITHUB_SHA} (PM2)" \
             --parameters "file:///tmp/ssm-commands.json" \
+            --timeout-seconds 600 \
+            --output-s3-bucket-name "${BUCKET}" \
+            --output-s3-key-prefix "${SSM_LOG_PREFIX}" \
             --query 'Command.CommandId' --output text)
+
           echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
           echo "SSM command: ${CMD_ID}"
+          echo "Full logs will be at: s3://${BUCKET}/${SSM_LOG_PREFIX}/"
 
+      # ────────────────────────────────────────────────────────
+      # FIX 4: Clear message if the loop exhausts all iterations.
+      # ────────────────────────────────────────────────────────
       - name: Wait for deployment to finish
+        id: wait
         run: |
           set -euo pipefail
           CMD_ID="${{ steps.ssm.outputs.command_id }}"
           FAILED=0
           STATUS="Unknown"
+
           for i in $(seq 1 60); do
             STATUS=$(aws ssm list-command-invocations \
               --command-id "${CMD_ID}" --details \
-              --query 'CommandInvocations[0].Status' --output text)
-            echo "status: ${STATUS}"
+              --query 'CommandInvocations[0].Status' --output text 2>/dev/null || echo "Pending")
+            echo "[${i}/60] status: ${STATUS}"
             case "${STATUS}" in
               Success) break ;;
-              Failed|Cancelled|TimedOut) echo "deploy failed"; FAILED=1; break ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::Deployment ${STATUS}"
+                FAILED=1
+                break
+                ;;
             esac
             sleep 10
           done
+
+          # If loop exhausted without terminal status
+          if [ "${FAILED}" = "0" ] && [ "${STATUS}" != "Success" ]; then
+            echo "::error::Timed out waiting for SSM command (last status: ${STATUS})"
+            FAILED=1
+          fi
+
+          # Print the truncated console output (still useful for quick glance)
+          echo "--- SSM console output (may be truncated) ---"
           aws ssm list-command-invocations --command-id "${CMD_ID}" --details \
-            --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text || true
-          if [ "${FAILED}" = "1" ] || [ "${STATUS}" != "Success" ]; then
+            --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text 2>/dev/null || true
+
+          echo "deploy_failed=${FAILED}" >> "$GITHUB_OUTPUT"
+
+          if [ "${FAILED}" = "1" ]; then
             exit 1
           fi
+
+      # ────────────────────────────────────────────────────────
+      # FIX 2: On failure, download and print the FULL SSM logs
+      #        from S3.  This runs even when the wait step fails.
+      # ────────────────────────────────────────────────────────
+      - name: Fetch full SSM logs from S3
+        if: always()
+        run: |
+          set -euo pipefail
+          SSM_LOG_PREFIX="${{ steps.ssm.outputs.ssm_log_prefix }}"
+          CMD_ID="${{ steps.ssm.outputs.command_id }}"
+          LOCAL_DIR="/tmp/ssm-logs"
+
+          echo "Downloading logs from s3://${BUCKET}/${SSM_LOG_PREFIX}/ ..."
+
+          # SSM writes logs after a short delay — wait a moment
+          sleep 5
+
+          aws s3 cp "s3://${BUCKET}/${SSM_LOG_PREFIX}/" "${LOCAL_DIR}/" --recursive 2>/dev/null || {
+            echo "WARNING: Could not download SSM logs from S3 (they may not be written yet)"
+            exit 0
+          }
+
+          echo ""
+          echo "=========================================="
+          echo "  FULL STDOUT (from S3)"
+          echo "=========================================="
+          find "${LOCAL_DIR}" -name 'stdout' -exec cat {} \; 2>/dev/null || echo "(no stdout file found)"
+
+          echo ""
+          echo "=========================================="
+          echo "  FULL STDERR (from S3)"
+          echo "=========================================="
+          find "${LOCAL_DIR}" -name 'stderr' -exec cat {} \; 2>/dev/null || echo "(no stderr file found)"
+
+          echo ""
+          echo "=========================================="
+          echo "  ALL FILES IN LOG DIRECTORY"
+          echo "=========================================="
+          find "${LOCAL_DIR}" -type f -exec echo "--- {} ---" \; -exec head -200 {} \; 2>/dev/null || true
