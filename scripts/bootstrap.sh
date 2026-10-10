@@ -87,6 +87,9 @@ retry_cmd() {
   local attempts="${RETRY_MAX_ATTEMPTS:-3}"
   local delay="${RETRY_INITIAL_DELAY_SECONDS:-3}"
   local attempt
+  if [ "${attempts}" -lt 1 ]; then
+    attempts=1
+  fi
 
   for attempt in $(seq 1 "${attempts}"); do
     if "$@"; then
