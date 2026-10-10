@@ -88,6 +88,7 @@ jobs:
         id: ssm
         run: |
           set -euo pipefail
+          SSM_LOG_PREFIX="ssm-logs/${GITHUB_RUN_ID}/${GITHUB_SHA}"
           python - <<'PY' > /tmp/ssm-commands.json
           import json
           import os
@@ -110,15 +111,20 @@ jobs:
             --instance-ids "${INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy ${GITHUB_SHA} (PM2)" \
+            --output-s3-bucket-name "${BUCKET}" \
+            --output-s3-key-prefix "${SSM_LOG_PREFIX}" \
             --parameters "file:///tmp/ssm-commands.json" \
             --query 'Command.CommandId' --output text)
           echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
+          echo "ssm_log_prefix=${SSM_LOG_PREFIX}" >> "$GITHUB_OUTPUT"
           echo "SSM command: ${CMD_ID}"
+          echo "SSM full output path prefix: s3://${BUCKET}/${SSM_LOG_PREFIX}/${CMD_ID}/"
 
       - name: Wait for deployment to finish
         run: |
           set -euo pipefail
           CMD_ID="${{ steps.ssm.outputs.command_id }}"
+          LOG_PREFIX="${{ steps.ssm.outputs.ssm_log_prefix }}"
           FAILED=0
           STATUS="Unknown"
           for i in $(seq 1 60); do
@@ -134,6 +140,19 @@ jobs:
           done
           aws ssm list-command-invocations --command-id "${CMD_ID}" --details \
             --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text || true
+          STDOUT_URL=$(aws ssm get-command-invocation \
+            --command-id "${CMD_ID}" \
+            --instance-id "${INSTANCE_ID}" \
+            --plugin-name "aws:runShellScript" \
+            --query 'StandardOutputUrl' --output text 2>/dev/null || true)
+          STDERR_URL=$(aws ssm get-command-invocation \
+            --command-id "${CMD_ID}" \
+            --instance-id "${INSTANCE_ID}" \
+            --plugin-name "aws:runShellScript" \
+            --query 'StandardErrorUrl' --output text 2>/dev/null || true)
+          [ -n "${STDOUT_URL}" ] && [ "${STDOUT_URL}" != "None" ] && echo "SSM stdout URL: ${STDOUT_URL}"
+          [ -n "${STDERR_URL}" ] && [ "${STDERR_URL}" != "None" ] && echo "SSM stderr URL: ${STDERR_URL}"
+          echo "SSM full output path prefix: s3://${BUCKET}/${LOG_PREFIX}/${CMD_ID}/"
           if [ "${FAILED}" = "1" ] || [ "${STATUS}" != "Success" ]; then
             exit 1
           fi

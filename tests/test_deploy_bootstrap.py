@@ -54,3 +54,15 @@ def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
     # Must NOT inline the raw script content in the SSM parameters
     assert 'import base64' not in content
     assert 'base64.b64encode' not in content
+
+
+def test_deploy_workflow_persists_ssm_output_to_s3():
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy.yml"
+    content = workflow.read_text()
+
+    assert 'SSM_LOG_PREFIX="ssm-logs/${GITHUB_RUN_ID}/${GITHUB_SHA}"' in content
+    assert '--output-s3-bucket-name "${BUCKET}"' in content
+    assert '--output-s3-key-prefix "${SSM_LOG_PREFIX}"' in content
+    assert '--query \'StandardOutputUrl\' --output text' in content
+    assert '--query \'StandardErrorUrl\' --output text' in content
+    assert 'SSM full output path prefix: s3://${BUCKET}/${LOG_PREFIX}/${CMD_ID}/' in content
