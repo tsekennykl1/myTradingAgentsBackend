@@ -106,8 +106,10 @@ if [ "$NEED_INSTALL" = true ]; then
       curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   elif [ "${PKG_MGR}" = "yum" ]; then
+    # AL2 repos often do not provide python3.12; install python3 tooling and
+    # let the explicit python3.12 check below fail with a clear message.
     ${PKG_SUDO} yum install -y \
-      curl unzip python3.12 python3-pip jq \
+      curl unzip python3 python3-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
     ${PKG_SUDO} apt-get update
@@ -198,7 +200,7 @@ if ! command -v node >/dev/null 2>&1; then
     ${PKG_SUDO} "${PKG_MGR}" install -y nodejs npm
   else
     # Ubuntu: pull Node 20.x LTS from NodeSource for a recent version.
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    curl -fsSL https://deb.nodesource.com/setup_20.x | ${PKG_SUDO} bash -
     ${PKG_SUDO} apt-get install -y nodejs
   fi
 fi
