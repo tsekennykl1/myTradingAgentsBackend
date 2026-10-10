@@ -95,16 +95,15 @@ retry_cmd() {
     if "$@"; then
       return 0
     fi
-    echo "Command failed (attempt ${attempt}/${attempts}): $*" >&2
-    if [ "${attempt}" -lt "${attempts}" ]; then
-      echo "Retrying in ${delay}s..." >&2
-      sleep "${delay}"
-      delay=$(( delay * 2 ))
+    if [ "${attempt}" -ge "${attempts}" ]; then
+      echo "Command failed (final attempt ${attempt}/${attempts}): $*" >&2
+      return 1
     fi
+    echo "Command failed (attempt ${attempt}/${attempts}): $*" >&2
+    echo "Retrying in ${delay}s..." >&2
+    sleep "${delay}"
+    delay=$(( delay * 2 ))
   done
-
-  echo "Command failed after ${attempts} attempts: $*" >&2
-  return 1
 }
 
 # ── System packages ──────────────────────────────────────────
