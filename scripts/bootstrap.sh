@@ -93,6 +93,14 @@ else
   exit 1
 fi
 
+run_pkg_cmd() {
+  if [ -n "${PKG_SUDO}" ]; then
+    "${PKG_SUDO}" "$@"
+  else
+    "$@"
+  fi
+}
+
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
 for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
@@ -102,18 +110,18 @@ done
 if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
-    ${PKG_SUDO} dnf install -y --allowerasing \
+    run_pkg_cmd "${PKG_MGR}" install -y --allowerasing \
       curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   elif [ "${PKG_MGR}" = "yum" ]; then
     # AL2 repos often do not provide python3.12; install python3 tooling and
     # let the explicit python3.12 check below fail with a clear message.
-    ${PKG_SUDO} yum install -y \
+    run_pkg_cmd "${PKG_MGR}" install -y \
       curl unzip python3 python3-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
-    ${PKG_SUDO} apt-get update
-    ${PKG_SUDO} apt-get install -y --no-install-recommends \
+    run_pkg_cmd apt-get update
+    run_pkg_cmd apt-get install -y --no-install-recommends \
       awscli curl unzip python3.12 python3-pip python3.12-venv jq \
       build-essential libpq-dev git
   fi
@@ -129,7 +137,7 @@ fi
 if ! systemctl is-active --quiet amazon-ssm-agent 2>/dev/null; then
   echo "SSM Agent not active — installing/starting…"
   if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
-    ${PKG_SUDO} "${PKG_MGR}" install -y amazon-ssm-agent 2>/dev/null || true
+    run_pkg_cmd "${PKG_MGR}" install -y amazon-ssm-agent 2>/dev/null || true
   else
     snap install amazon-ssm-agent --classic 2>/dev/null || true
   fi
@@ -197,11 +205,11 @@ if ! command -v node >/dev/null 2>&1; then
   echo "Installing Node.js…"
   if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
     # Amazon Linux repos ship Node 18+ — sufficient for PM2.
-    ${PKG_SUDO} "${PKG_MGR}" install -y nodejs npm
+    run_pkg_cmd "${PKG_MGR}" install -y nodejs npm
   else
     # Ubuntu: pull Node 20.x LTS from NodeSource for a recent version.
-    curl -fsSL https://deb.nodesource.com/setup_20.x | ${PKG_SUDO} bash -
-    ${PKG_SUDO} apt-get install -y nodejs
+    curl -fsSL https://deb.nodesource.com/setup_20.x | run_pkg_cmd bash -
+    run_pkg_cmd apt-get install -y nodejs
   fi
 fi
 
@@ -225,9 +233,9 @@ install_cloudwatch_agent() {
   if ! command -v amazon-cloudwatch-agent-ctl >/dev/null 2>&1 \
      && [ ! -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
     if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
-      ${PKG_SUDO} "${PKG_MGR}" install -y amazon-cloudwatch-agent
+      run_pkg_cmd "${PKG_MGR}" install -y amazon-cloudwatch-agent
     else
-      ${PKG_SUDO} apt-get install -y --no-install-recommends amazon-cloudwatch-agent
+      run_pkg_cmd apt-get install -y --no-install-recommends amazon-cloudwatch-agent
     fi
   fi
 
@@ -320,9 +328,9 @@ pkill -f "uvicorn app.main:app" 2>/dev/null || true
 # ──────────────────────────────────────────────────────────────
 if ! command -v nginx >/dev/null 2>&1; then
   if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
-    ${PKG_SUDO} "${PKG_MGR}" install -y nginx
+    run_pkg_cmd "${PKG_MGR}" install -y nginx
   else
-    ${PKG_SUDO} apt-get install -y --no-install-recommends nginx
+    run_pkg_cmd apt-get install -y --no-install-recommends nginx
   fi
 fi
 
@@ -628,7 +636,7 @@ chown "${SVC_USER}:${SVC_USER}" "${CLEANUP_SCRIPT}"
 # Must install BEFORE writing to /etc/cron.d/ — AL2023 does not ship cronie
 # by default, so /etc/cron.d/ may not yet exist on the first deploy.
 if [ "${PKG_MGR}" = "dnf" ] || [ "${PKG_MGR}" = "yum" ]; then
-  ${PKG_SUDO} "${PKG_MGR}" install -y cronie 2>/dev/null || true
+  run_pkg_cmd "${PKG_MGR}" install -y cronie 2>/dev/null || true
   systemctl enable crond 2>/dev/null || true
   systemctl start  crond 2>/dev/null || true
   CRON_SVC="crond"

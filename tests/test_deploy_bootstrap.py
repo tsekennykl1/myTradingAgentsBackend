@@ -52,7 +52,8 @@ def test_bootstrap_supports_dnf_yum_and_privileged_installs():
     assert 'PKG_MGR="yum"' in content
     assert 'No supported package manager found (dnf, yum, or apt-get)' in content
     assert 'Package installation needs root privileges; re-run as root or install sudo' in content
-    assert '${PKG_SUDO} "${PKG_MGR}" install -y amazon-ssm-agent' in content
-    assert '${PKG_SUDO} "${PKG_MGR}" install -y nginx' in content
-    assert '${PKG_SUDO} yum install -y \\' in content
-    assert 'curl -fsSL https://deb.nodesource.com/setup_20.x | ${PKG_SUDO} bash -' in content
+    assert 'run_pkg_cmd() {' in content
+    assert 'run_pkg_cmd "${PKG_MGR}" install -y amazon-ssm-agent' in content
+    assert 'run_pkg_cmd "${PKG_MGR}" install -y nginx' in content
+    assert 'run_pkg_cmd "${PKG_MGR}" install -y \\' in content
+    assert 'curl -fsSL https://deb.nodesource.com/setup_20.x | run_pkg_cmd bash -' in content
