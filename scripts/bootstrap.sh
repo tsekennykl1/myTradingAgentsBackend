@@ -86,19 +86,19 @@ fi
 retry_cmd() {
   local attempts="${RETRY_MAX_ATTEMPTS:-3}"
   local delay="${RETRY_INITIAL_DELAY_SECONDS:-3}"
-  local try=1
+  local attempt=0
 
-  while true; do
+  while [ "${attempt}" -lt "${attempts}" ]; do
+    attempt=$(( attempt + 1 ))
     if "$@"; then
       return 0
     fi
-    if [ "${try}" -ge "${attempts}" ]; then
+    if [ "${attempt}" -ge "${attempts}" ]; then
       echo "Command failed after ${attempts} attempts: $*" >&2
       return 1
     fi
-    echo "Command failed (attempt ${try}/${attempts}): $* - retrying in ${delay}s" >&2
+    echo "Command failed (attempt ${attempt}/${attempts}): $* - retrying in ${delay}s" >&2
     sleep "${delay}"
-    try=$(( try + 1 ))
     delay=$(( delay * 2 ))
   done
 }
