@@ -121,10 +121,11 @@ jobs:
           echo "SSM full output path prefix: s3://${BUCKET}/${SSM_LOG_PREFIX}/${CMD_ID}/"
 
       - name: Wait for deployment to finish
+        env:
+          LOG_PREFIX: ${{ steps.ssm.outputs.ssm_log_prefix }}
         run: |
           set -euo pipefail
           CMD_ID="${{ steps.ssm.outputs.command_id }}"
-          LOG_PREFIX="${{ steps.ssm.outputs.ssm_log_prefix }}"
           FAILED=0
           STATUS="Unknown"
           for i in $(seq 1 60); do
