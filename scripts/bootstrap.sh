@@ -90,6 +90,38 @@ else
   exit 1
 fi
 
+# ── Retry helper for transient network/package failures ─────────
+retry_cmd() {
+  local attempts="${RETRY_MAX_ATTEMPTS:-3}"
+  local delay="${RETRY_INITIAL_DELAY_SECONDS:-3}"
+  local attempt=1
+  if [ "${attempts}" -lt 1 ]; then
+    attempts=1
+  fi
+
+  while [ "${attempt}" -le "${attempts}" ]; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "${attempt}" -ge "${attempts}" ]; then
+      echo "Command failed (final attempt ${attempt}/${attempts}): $*" >&2
+      return 1
+    fi
+    echo "Command failed (attempt ${attempt}/${attempts}): $*" >&2
+    echo "Retrying in ${delay}s..." >&2
+    sleep "${delay}"
+    delay=$(( delay * 2 ))
+    attempt=$(( attempt + 1 ))
+  done
+}
+
+install_apt_packages() {
+  apt-get update || return 1
+  apt-get install -y --no-install-recommends \
+    awscli curl unzip python3.12 python3-pip python3.12-venv jq \
+    build-essential libpq-dev git || return 1
+}
+
 # ── System packages ──────────────────────────────────────────
 NEED_INSTALL=false
 for cmd in unzip python3.12 pip3.12 jq git gcc curl; do
@@ -99,14 +131,11 @@ done
 if [ "$NEED_INSTALL" = true ]; then
   if [ "${PKG_MGR}" = "dnf" ]; then
     # AL2023 ships AWS CLI v2 pre-installed; do NOT add 'awscli2'.
-    dnf install -y --allowerasing \
+    retry_cmd dnf install -y --allowerasing \
       curl unzip python3.12 python3.12-pip jq \
       gcc gcc-c++ make libpq-devel git tar
   else
-    apt-get update
-    apt-get install -y --no-install-recommends \
-      awscli curl unzip python3.12 python3-pip python3.12-venv jq \
-      build-essential libpq-dev git
+    retry_cmd install_apt_packages
   fi
 fi
 
@@ -513,15 +542,15 @@ if [ ! -x "${APP_ROOT}/.venv/bin/python3" ]; then
   }
 fi
 
-"${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
-"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
+retry_cmd "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel
+retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir -r "${APP_ROOT}/requirements.txt"
 
 # ★ NEW (Fix 5) — Install tradingagents from GitHub (pinned tag) ─────
 #   The PyPI package either doesn't exist or lags behind the GitHub repo.
 #   Installed AFTER requirements.txt so it wins over any transitive dep.
 #   Bump TA_TAG (e.g. to v0.5.0) via env var — no code edit required.
 echo "Installing tradingagents from ${TA_REPO} @ ${TA_TAG} …"
-"${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
+retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
   "tradingagents @ git+${TA_REPO}@${TA_TAG}"
 
 TA_VERSION=$("${APP_ROOT}/.venv/bin/pip" show tradingagents 2>/dev/null \
