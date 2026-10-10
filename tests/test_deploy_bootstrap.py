@@ -54,3 +54,4 @@ def test_bootstrap_retries_transient_install_failures():
     assert 'retry_cmd install_apt_packages' in content
     assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel' in content
     assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir' in content
+    assert '"tradingagents @ git+${TA_REPO}@${TA_TAG}"' in content

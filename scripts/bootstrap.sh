@@ -108,10 +108,10 @@ retry_cmd() {
 }
 
 install_apt_packages() {
-  apt-get update
+  apt-get update || return 1
   apt-get install -y --no-install-recommends \
     awscli curl unzip python3.12 python3-pip python3.12-venv jq \
-    build-essential libpq-dev git
+    build-essential libpq-dev git || return 1
 }
 
 # ── System packages ──────────────────────────────────────────
