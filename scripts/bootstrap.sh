@@ -127,6 +127,11 @@ if [ "$NEED_INSTALL" = true ]; then
   fi
 fi
 
+if [ "${PKG_MGR}" = "yum" ] && ! command -v python3.12 >/dev/null 2>&1; then
+  echo "python3.12 is required but not available via yum on this AMI. Use an image/repo with python3.12 preinstalled." >&2
+  exit 1
+fi
+
 if ! command -v aws >/dev/null 2>&1; then
   echo "AWS CLI not found after package install" >&2
   exit 1
