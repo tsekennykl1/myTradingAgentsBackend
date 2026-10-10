@@ -28,6 +28,14 @@ def test_bootstrap_env_fallback_when_s3_env_missing():
     assert 'chmod 640 "${ENV_PATH}"' in content
 
 
+def test_bootstrap_health_check_does_not_fail_when_only_nginx_probe_fails():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.sh"
+    content = script.read_text()
+
+    assert 'if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then' in content
+    assert 'nginx /api/health did not become reachable within retry window' in content
+
+
 def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
     workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy.yml"
     content = workflow.read_text()
