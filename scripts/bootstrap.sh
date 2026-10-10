@@ -86,21 +86,21 @@ fi
 retry_cmd() {
   local attempts="${RETRY_MAX_ATTEMPTS:-3}"
   local delay="${RETRY_INITIAL_DELAY_SECONDS:-3}"
-  local attempt=0
+  local attempt
 
-  while [ "${attempt}" -lt "${attempts}" ]; do
-    attempt=$(( attempt + 1 ))
+  for attempt in $(seq 1 "${attempts}"); do
     if "$@"; then
       return 0
     fi
-    if [ "${attempt}" -ge "${attempts}" ]; then
-      echo "Command failed after ${attempts} attempts: $*" >&2
-      return 1
+    if [ "${attempt}" -lt "${attempts}" ]; then
+      echo "Command failed (attempt ${attempt}/${attempts}): $* - retrying in ${delay}s" >&2
+      sleep "${delay}"
+      delay=$(( delay * 2 ))
     fi
-    echo "Command failed (attempt ${attempt}/${attempts}): $* - retrying in ${delay}s" >&2
-    sleep "${delay}"
-    delay=$(( delay * 2 ))
   done
+
+  echo "Command failed after ${attempts} attempts: $*" >&2
+  return 1
 }
 
 # ── System packages ──────────────────────────────────────────
