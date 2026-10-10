@@ -769,6 +769,7 @@ grep '^TRADINGAGENTS_LLM_PROVIDER=' "${APP_ROOT}/.env" 2>/dev/null || echo "  (n
 #   the bootstrap check AND the frontend engine status check return 200.
 BACKEND_HEALTHY=0
 for i in $(seq 1 30); do
+  BACKEND_HEALTHY=0
   if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
     BACKEND_HEALTHY=1
     if curl -fsS "http://127.0.0.1/api/health" >/dev/null 2>&1; then
