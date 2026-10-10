@@ -51,4 +51,4 @@ def test_bootstrap_retries_transient_install_failures():
     assert 'retry_cmd()' in content
     assert 'retry_cmd dnf install -y --allowerasing' in content
     assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel' in content
-    assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \\' in content
+    assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir' in content

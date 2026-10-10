@@ -96,7 +96,7 @@ retry_cmd() {
       echo "Command failed after ${attempts} attempts: $*" >&2
       return 1
     fi
-    echo "Command failed (attempt ${try}/${attempts}): $* — retrying in ${delay}s" >&2
+    echo "Command failed (attempt ${try}/${attempts}): $* - retrying in ${delay}s" >&2
     sleep "${delay}"
     try=$(( try + 1 ))
     delay=$(( delay * 2 ))
