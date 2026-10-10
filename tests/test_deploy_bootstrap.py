@@ -49,7 +49,8 @@ def test_bootstrap_retries_transient_install_failures():
     content = script.read_text()
 
     assert 'retry_cmd()' in content
+    assert 'install_apt_packages()' in content
     assert 'retry_cmd dnf install -y --allowerasing' in content
-    assert 'retry_cmd bash -c "apt-get update && apt-get install -y --no-install-recommends' in content
+    assert 'retry_cmd install_apt_packages' in content
     assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --upgrade pip setuptools wheel' in content
     assert 'retry_cmd "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir' in content
