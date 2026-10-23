@@ -7,7 +7,8 @@ The two official HKEX workbooks in ``app/data`` are the source of truth:
 
 On the first lookup after each backend start, :func:`ensure_loaded` reads both
 workbooks, joins their rows by stock code, validates the result, and replaces
-the ``hk_securities`` table in ``DATA_DIR/app.db``. No generated JSON file is
+the ``market = 'HK'`` rows of the shared ``securities`` table in
+``DATA_DIR/app.db`` (see :mod:`app.securities`). No generated JSON file is
 needed. Updating the directory therefore only requires replacing both XLSX
 files with a newer matching pair from HKEX and restarting the backend.
 
@@ -19,16 +20,11 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
-import threading
 from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).expanduser()
-DB_PATH = DATA_DIR / "app.db"
 SOURCE_DIR = Path(__file__).resolve().parent
 ENGLISH_FILE = Path(os.getenv("HK_SECURITIES_EN_FILE", SOURCE_DIR / "ListOfSecurities.xlsx"))
 CHINESE_FILE = Path(os.getenv("HK_SECURITIES_ZH_FILE", SOURCE_DIR / "ListOfSecurities_c.xlsx"))
@@ -40,16 +36,6 @@ INCLUDED_CATEGORIES = {
     "Equity Warrants (Main Board)",
     "Equity Warrants (GEM)",
 }
-
-_LOCK = threading.Lock()
-_loaded = False
-
-
-def _connect() -> sqlite3.Connection:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def normalize_ticker(text: str) -> Optional[str]:
@@ -129,59 +115,36 @@ def _read_sources() -> list[tuple[str, str, Optional[str], Optional[str], Option
     return rows
 
 
-def ensure_loaded() -> int:
-    """Refresh SQLite from both XLSX source files once per backend process."""
-    global _loaded
-    with _LOCK:
-        if _loaded:
-            conn = _connect()
-            try:
-                return int(conn.execute("SELECT COUNT(*) FROM hk_securities").fetchone()[0])
-            finally:
-                conn.close()
+def load_rows() -> list[dict[str, Any]]:
+    """HK rows in the shape of the shared ``securities`` table."""
+    return [
+        {
+            "ticker": ticker,
+            "code": code,
+            "name_en": name_en,
+            "name_zh": name_zh,
+            "market": "HK",
+            "exchange": "HKEX",
+            "category": category,
+        }
+        for ticker, code, name_en, name_zh, category in _read_sources()
+    ]
 
-        rows = _read_sources()
-        conn = _connect()
-        try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS hk_securities (
-                    ticker TEXT PRIMARY KEY,
-                    code TEXT NOT NULL,
-                    name_en TEXT,
-                    name_zh TEXT,
-                    category TEXT
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_hk_securities_code ON hk_securities(code)")
-            with conn:
-                conn.execute("DELETE FROM hk_securities")
-                conn.executemany(
-                    "INSERT INTO hk_securities (ticker, code, name_en, name_zh, category) VALUES (?, ?, ?, ?, ?)",
-                    rows,
-                )
-            _loaded = True
-            return len(rows)
-        finally:
-            conn.close()
+
+def ensure_loaded() -> int:
+    """Refresh the HK rows of the ``securities`` table once per process."""
+    from app import securities
+
+    return securities.ensure_loaded(["HK"])["HK"]
 
 
 def lookup(ticker: str) -> Optional[dict[str, Any]]:
     """Return both HKEX names and the category for one HK ticker."""
-    symbol = normalize_ticker(ticker)
-    if not symbol:
+    from app import securities
+
+    if not normalize_ticker(ticker):
         return None
-    ensure_loaded()
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT ticker, code, name_en, name_zh, category FROM hk_securities WHERE ticker = ?",
-            (symbol,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return dict(row) if row else None
+    return securities.lookup(ticker)
 
 
 def display_name(ticker: str) -> Optional[str]:

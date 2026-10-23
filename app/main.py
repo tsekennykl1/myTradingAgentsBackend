@@ -7,8 +7,9 @@ What happens here, in order:
 2. Create the FastAPI app and allow the dashboard's browser origin through CORS
    (FRONTEND_ORIGINS in .env, comma separated).
 3. On startup: mark runs that were interrupted by a previous shutdown
-   (reconcile_incomplete_runs) and start the background worker threads that
-   actually execute analyses (start_workers).
+   (reconcile_incomplete_runs), start the background worker threads that
+   actually execute analyses (start_workers), and preload the HK + US stock
+   directory in the background (app/securities.py).
 4. Expose two tiny always-on endpoints, "/" and "/health", then mount every
    real endpoint from app/routes/.
 
@@ -44,6 +45,12 @@ async def lifespan(_: FastAPI):
 
     reconcile_incomplete_runs()
     start_workers()
+    if os.getenv("SECURITIES_PRELOAD", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        # HK (HKEX workbooks) and US (Nasdaq Trader download) stock directory,
+        # loaded in the background so the stock field can suggest names at once.
+        from app.securities import preload
+
+        preload()
     if os.getenv("MCP_ENABLED", "1").strip().lower() in {"0", "false", "no", "off"}:
         yield
         return

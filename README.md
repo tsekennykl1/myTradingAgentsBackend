@@ -83,7 +83,9 @@ Two settings matter for the dashboard:
 | `app/tradingagents_service.py` | Version-tolerant adapter to the TradingAgents framework. |
 | `app/fast_path.py` | Optional speed-ups: parallel analysts/risk debaters, data cache. |
 | `app/market_data.py` | Price download plus RSI/MACD/ATR/Bollinger/etc. |
-| `app/hk_securities.py` | Imports English and Chinese stock names from the two official HKEX XLSX files into SQLite. |
+| `app/securities.py` | Shared `securities` table (code, name, market) for HK and US; lookup, search, full list. |
+| `app/hk_securities.py` | Reads English and Chinese stock names from the two official HKEX XLSX files (market `HK`). |
+| `app/us_securities.py` | Downloads US stock codes and names from the Nasdaq Trader symbol directory (market `US`). |
 | `app/data/ListOfSecurities*.xlsx` | Raw HKEX English/Chinese security lists; these are the stock-name source of truth. |
 | `app/charts.py` | Plotly HTML and matplotlib PNG rendering. |
 | `app/artifacts.py` | Per-run files: market data, chart payloads, `result.html`. |
@@ -136,21 +138,46 @@ lease that expires; startup reclaims it and retries up to `RUN_MAX_ATTEMPTS`.
 | `ARTIFACTS_DIR/<run_id>/` | `market-data.json`, `price-chart.json/.png/.html`, `result.html`. |
 | Process memory | Short-lived caches for repeated market/news lookups (`app/fast_path.py`). |
 
-### Updating Hong Kong stock names
+### Stock directory (HK + US)
 
-Download the latest matching English and Chinese **List of Securities** files
-from HKEX. Keep their original names and replace:
+All stock codes and names live in one SQLite table, `securities` in
+`data/app.db`, with a `market` column (`HK` or `US`):
+
+| column | example HK | example US |
+| --- | --- | --- |
+| `ticker` | `0700.HK` | `BRK-B` (price-data symbol) |
+| `code` | `00700` | `BRK.B` (exchange code) |
+| `name_en` / `name_zh` | `TENCENT` / `騰訊控股` | `Berkshire Hathaway Inc. New` / – |
+| `market` / `exchange` | `HK` / `HKEX` | `US` / `NYSE` |
+| `category` | `Equity` | `Equity` or `ETF` |
+
+The table is refreshed in the background every time the backend starts
+(`SECURITIES_PRELOAD=0` turns that off; the first lookup then loads it).
+A market whose source fails keeps its previous rows.
+
+**Hong Kong** — download the latest matching English and Chinese
+**List of Securities** files from HKEX, keep their original names and replace:
 
 ```text
-app/data/ListOfSecurities.xlsx
-app/data/ListOfSecurities_c.xlsx
+app/ListOfSecurities.xlsx
+app/ListOfSecurities_c.xlsx
 ```
 
-Restart the backend. On its first Hong Kong security lookup, it reads both
-workbooks, joins them by stock code, validates them, and replaces the
-`hk_securities` rows in `data/app.db`. The English workbook supplies the code,
-English name, and category; the Chinese workbook supplies the Chinese name.
-`app/data/hk_securities.json` is no longer used or required.
+then restart. The English workbook supplies the code, English name and
+category; the Chinese workbook supplies the Chinese name.
+
+**United States** — nothing to replace. On start the backend downloads
+`nasdaqlisted.txt` and `otherlisted.txt` from nasdaqtrader.com (every Nasdaq,
+NYSE, NYSE American, NYSE Arca and Cboe listing), saves them in
+`data/sources/`, and reuses that copy for 24 hours
+(`US_SECURITIES_MAX_AGE_HOURS`). If the site cannot be reached, the saved copy
+is used. Test issues, preferreds, warrants, rights, units and notes are left
+out. Override the URLs with `US_SECURITIES_NASDAQ_URL` / `US_SECURITIES_OTHER_URL`.
+
+Endpoints: `GET /market/security?ticker=AAPL` (one row) and
+`GET /market/securities?market=US` (the whole market as
+`{ticker: [name_en, name_zh, exchange]}`, gzip + ETag, for the dashboard to
+preload and filter on every keypress; add `&q=APP` for a server-side search).
 
 Both directories must live on a **persistent volume**. Because state is local,
 running more than one instance behind a load balancer needs shared storage first.

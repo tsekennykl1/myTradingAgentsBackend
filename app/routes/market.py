@@ -16,6 +16,9 @@ GET /market/earnings?ticker=AAPL&quarters=4
     Recent quarterly EPS: reported vs estimated, surprise %, plus the
     latest annual EPS series for a trend line.
 
+GET /market/security?ticker=AAPL  /  GET /market/securities?market=US
+    Stock directory (code, name, market) for HK and US listings; see below.
+
 Both answer 200 with ``available: false`` and a human-readable ``message``
 when the key is missing, the free-tier rate limit is hit, or the symbol is
 not covered (Alpha Vantage has thin coverage outside US listings, e.g.
@@ -28,12 +31,16 @@ tier allows only 25 requests a day.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
 import os
 import time
-from typing import Any
+from typing import Any, Optional
 
 import requests
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -201,22 +208,79 @@ def earnings(
 
 @router.get("/security")
 def security(ticker: str = Query(..., min_length=1)) -> dict[str, Any]:
-    """HKEX directory lookup: English and Chinese name for a Hong Kong listing.
+    """Directory lookup: code, name and market for one HK or US listing.
 
-    The ``hk_securities`` table is refreshed directly from the paired English
-    and Chinese HKEX XLSX source files once per backend process, so the
-    dashboard can title the market snapshot before any price data arrives.
+    Rows come from the shared ``securities`` table (see ``app/securities.py``):
+    HK names from the HKEX XLSX workbooks, US names from the Nasdaq Trader
+    symbol directory. Numeric codes are HK, letter codes are US.
 
     GET /market/security?ticker=0700.HK
-    -> {"available": true, "ticker": "0700.HK", "code": "00700",
-        "name_en": "TENCENT", "name_zh": "騰訊控股", "category": "Equity"}
+    -> {"available": true, "ticker": "0700.HK", "code": "00700", "market": "HK",
+        "exchange": "HKEX", "name_en": "TENCENT", "name_zh": "騰訊控股", "category": "Equity"}
+    GET /market/security?ticker=AAPL
+    -> {"available": true, "ticker": "AAPL", "code": "AAPL", "market": "US",
+        "exchange": "NASDAQ", "name_en": "Apple Inc.", "name_zh": null, "category": "Equity"}
     """
-    from app import hk_securities
+    from app import securities
 
     symbol = ticker.strip().upper()
-    if not hk_securities.is_hk_ticker(symbol):
-        return _unavailable("Only Hong Kong listings (.HK) are in this directory.")
-    row = hk_securities.lookup(symbol)
+    market = securities.market_of(symbol)
+    if not market:
+        return _unavailable("Only Hong Kong (numeric) and US (letter) codes are in this directory.")
+    row = securities.lookup(symbol)
     if not row:
-        return _unavailable(f"{symbol} is not in the HKEX securities list.")
+        listing = "HKEX securities list" if market == "HK" else "US securities list"
+        return _unavailable(f"{symbol} is not in the {listing}.")
     return {"available": True, **row}
+
+
+@router.get("/securities")
+def securities_directory(
+    request: Request,
+    market: str = Query("US", description="HK or US"),
+    q: Optional[str] = Query(None, description="Optional code/name search; omit for the full list"),
+    limit: int = Query(10, ge=1, le=50),
+) -> Response:
+    """Stock code -> name directory for the dashboard's stock field.
+
+    Without ``q`` it returns the whole market once, compactly, so the
+    dashboard can preload it and filter suggestions locally on every keypress:
+
+    GET /market/securities?market=US
+    -> {"market": "US", "count": 11748,
+        "securities": {"AAPL": ["Apple Inc.", null, "NASDAQ"], "BRK-B": [...], ...}}
+
+    Each value is ``[name_en, name_zh, exchange]`` keyed by price-data ticker
+    (HK keys are four/five digit codes such as ``"0700"``, matching the
+    dashboard's bundled HKEX map). The response is gzip-compressed when the
+    browser accepts it and carries an ETag so repeat loads are a cheap 304.
+
+    With ``q`` it returns the best ``limit`` matches as rows:
+
+    GET /market/securities?market=US&q=APP -> {"market": "US", "query": "APP", "results": [{...}, ...]}
+    """
+    from app import securities
+
+    code = securities.normalize_market(market)
+    if not code:
+        return JSONResponse({"available": False, "message": "market must be HK or US."}, status_code=400)
+    if q is not None and q.strip():
+        return JSONResponse({"market": code, "query": q.strip(), "results": securities.search(q, code, limit)})
+
+    rows = securities.listing(code)
+    directory = {
+        (row["ticker"][:-3] if code == "HK" else row["ticker"]): [row["name_en"], row["name_zh"], row["exchange"]]
+        for row in rows
+    }
+    body = json.dumps(
+        {"market": code, "count": len(directory), "securities": directory},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    etag = '"' + hashlib.sha1(body).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "public, max-age=3600", "Vary": "Accept-Encoding"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    if "gzip" in request.headers.get("accept-encoding", "").lower():
+        return Response(gzip.compress(body), media_type="application/json", headers={**headers, "Content-Encoding": "gzip"})
+    return Response(body, media_type="application/json", headers=headers)
