@@ -391,7 +391,9 @@ BLOCK
 nginx_server_block "${NGINX_DOMAIN} www.${NGINX_DOMAIN}" \
   > /etc/nginx/conf.d/myfinance.conf
 
-# Catch-all (direct IP, ALB health checks, etc.)
+# Catch-all for unknown hosts. Not the default server: nginx uses the first
+# server block it loads for port 80 (another app's conf may sort earlier), so
+# checks on this box must send "Host: ${NGINX_DOMAIN}".
 nginx_server_block "_" \
   > /etc/nginx/conf.d/mytradingagents.conf
 
@@ -768,13 +770,37 @@ grep '^TRADINGAGENTS_LLM_PROVIDER=' "${APP_ROOT}/.env" 2>/dev/null || echo "  (n
 #   "location /api/" (prefix match) strips the prefix, so /api/health → /health → 200.
 # ★ FIX (Fix 10): "location = /api" now also proxies to /health, so both
 #   the bootstrap check AND the frontend engine status check return 200.
+nginx_proxy_diagnostics() {
+  echo "=== nginx /api/health diagnostics ==="
+  for host in "127.0.0.1" "${NGINX_DOMAIN}"; do
+    code="$(curl -sS -o /tmp/nginx-health-body -w '%{http_code}' -H "Host: ${host}" \
+      "http://127.0.0.1/api/health" 2>&1)" || true
+    echo "Host ${host}: HTTP ${code} body: $(head -c 300 /tmp/nginx-health-body 2>/dev/null | tr '\n' ' ')"
+  done
+  ls -la /etc/nginx/conf.d /etc/nginx/default.d 2>/dev/null || true
+  nginx -T 2>/dev/null \
+    | grep -nE '^# configuration file|listen|server_name|location|proxy_pass|default_server|return |include ' || true
+  ss -ltnp 2>/dev/null | grep -E ':(80|443|3000|8000) ' || true
+  echo "--- nginx error.log (last 20) ---"
+  tail -n 20 /var/log/nginx/error.log 2>/dev/null || true
+  echo "SELinux: $(getenforce 2>/dev/null || echo n/a)"
+}
+
+NGINX_DIAG_DONE=0
 for i in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
-    if curl -fsS "http://127.0.0.1/api/health" >/dev/null 2>&1; then
+    # Name the site: this server also hosts other apps (e.g. mindful-money on
+    # app.${NGINX_DOMAIN}), and nginx hands a request with an unknown Host,
+    # such as a bare 127.0.0.1, to whichever server block loads first.
+    if curl -fsS -H "Host: ${NGINX_DOMAIN}" "http://127.0.0.1/api/health" >/dev/null 2>&1; then
       echo "Backend healthy on release ${RELEASE_SHA} (direct + nginx /api/health route ✓)."
       exit 0
     else
       echo "WARNING: Backend healthy on :8000 but nginx /api/health route not yet working"
+      if [ "${NGINX_DIAG_DONE}" -eq 0 ]; then
+        nginx_proxy_diagnostics || true
+        NGINX_DIAG_DONE=1
+      fi
     fi
   fi
   sleep 5

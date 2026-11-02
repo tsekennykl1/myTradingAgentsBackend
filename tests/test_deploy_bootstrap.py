@@ -34,6 +34,10 @@ def test_bootstrap_health_check_does_not_fail_when_only_nginx_probe_fails():
 
     assert 'if curl -fsS "http://127.0.0.1:8000/health" >/dev/null 2>&1; then' in content
     assert 'nginx /api/health did not become reachable within retry window' in content
+    # The server hosts other apps; a bare 127.0.0.1 request reaches whichever
+    # server block nginx loads first, so the proxy check must name the site.
+    assert 'curl -fsS -H "Host: ${NGINX_DOMAIN}" "http://127.0.0.1/api/health"' in content
+    assert 'curl -fsS "http://127.0.0.1/api/health"' not in content
 
 
 def test_deploy_workflow_uploads_bootstrap_to_s3_for_ssm():
