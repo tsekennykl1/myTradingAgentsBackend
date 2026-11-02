@@ -8,8 +8,9 @@ Steps:
   3. Print the run id and poll `get_analysis_status` a few times.
 
 Usage:
-  MCP_ACCESS_KEY=<key> python tests/test_mcp_call.py
-  (or leave the env var unset and type the key when prompted)
+  MCP_API_KEY=<key> python tests/test_mcp_call.py
+  MCP_ACCESS_KEY=<key> python tests/test_mcp_call.py   (alias, same effect)
+  (or leave both unset and type the key when prompted)
 """
 
 import asyncio
@@ -54,12 +55,12 @@ def preflight_initialize(access_key: str) -> bool:
     print(f"   {body[:300]}{'...' if len(body) > 300 else ''}")
 
     if response.status_code == 401:
-        if "no MCP_ACCESS_KEY configured" in body:
-            print("   ✗ The running server did not load MCP_ACCESS_KEY.")
+        if "configured, so MCP is closed" in body:
+            print("   ✗ The running server did not load MCP_API_KEY / MCP_ACCESS_KEY.")
             print("     Run: python app/initialSetup.py")
             print("     Then fully stop and restart uvicorn from the backend folder.")
         else:
-            print("   ✗ The supplied key does not match the server's MCP_ACCESS_KEY.")
+            print("   ✗ The supplied key does not match the server's MCP_API_KEY / MCP_ACCESS_KEY.")
         return False
     if response.status_code != 200:
         print("   ✗ Unexpected status, aborting before the tool call.")
@@ -103,11 +104,14 @@ async def analyze(ticker: str, date: str, access_key: str) -> None:
 
 
 if __name__ == "__main__":
-    access_key = os.environ.get("MCP_ACCESS_KEY", "").strip()
+    access_key = (
+        os.environ.get("MCP_API_KEY", "").strip()
+        or os.environ.get("MCP_ACCESS_KEY", "").strip()
+    )
     if not access_key:
         access_key = input("Enter the MCP access key: ").strip()
     if not access_key:
-        sys.exit("No access key given. Set MCP_ACCESS_KEY or type it when prompted.")
+        sys.exit("No access key given. Set MCP_API_KEY (or MCP_ACCESS_KEY) or type it when prompted.")
 
     if not preflight_initialize(access_key):
         sys.exit(1)

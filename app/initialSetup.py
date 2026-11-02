@@ -328,6 +328,7 @@ def get_ordered_env_keys(values: dict[str, str]) -> list[str]:
         "ALPHA_VANTAGE_API_KEY",
         "FRED_API_KEY",
         "MCP_ENABLED",
+        "MCP_API_KEY",
         "MCP_ACCESS_KEY",
         "MCP_ALLOWED_TOOLS",
         "MCP_CREATE_RUNS_PER_HOUR",
@@ -658,6 +659,7 @@ def configure_mcp(env: dict[str, str]) -> None:
 
     if not enable:
         env["MCP_ENABLED"] = "0"
+        env["MCP_API_KEY"] = ""
         env["MCP_ACCESS_KEY"] = ""
         print("MCP server disabled. /mcp will refuse every request.")
         print()
@@ -675,7 +677,7 @@ def configure_mcp(env: dict[str, str]) -> None:
     print("  - leaving it empty keeps /mcp closed to everyone")
     print()
 
-    existing_key = env.get("MCP_ACCESS_KEY", "").strip()
+    existing_key = (env.get("MCP_API_KEY", "") or env.get("MCP_ACCESS_KEY", "")).strip()
     if existing_key:
         print(f"Current key: {mask_secret(existing_key)}")
         if not prompt_yes_no("Replace the existing MCP access key?", default=False):
@@ -684,6 +686,8 @@ def configure_mcp(env: dict[str, str]) -> None:
 
     if prompt_yes_no("Generate a strong key for you?", default=True):
         key = generate_access_key()
+        # MCP_API_KEY is the real key; MCP_ACCESS_KEY mirrors it for other agents.
+        env["MCP_API_KEY"] = key
         env["MCP_ACCESS_KEY"] = key
         print()
         print("Generated MCP access key (copy it now, it is stored only in .env):")
@@ -691,9 +695,10 @@ def configure_mcp(env: dict[str, str]) -> None:
         print()
     else:
         while True:
-            key = prompt("Enter MCP_ACCESS_KEY", required=True)
+            key = prompt("Enter MCP_API_KEY", required=True)
             ok, reason = validate_access_key(key)
             if ok:
+                env["MCP_API_KEY"] = key.strip()
                 env["MCP_ACCESS_KEY"] = key.strip()
                 break
             print(f"❌ {reason}")
@@ -1002,6 +1007,7 @@ CONFIG_ALIASES = {
     "fred_api_key": "FRED_API_KEY",
     "alpha_vantage_api_key": "ALPHA_VANTAGE_API_KEY",
     "mcp_enabled": "MCP_ENABLED",
+    "mcp_api_key": "MCP_API_KEY",
     "mcp_access_key": "MCP_ACCESS_KEY",
     "mcp_allowed_tools": "MCP_ALLOWED_TOOLS",
     "mcp_create_runs_per_hour": "MCP_CREATE_RUNS_PER_HOUR",
@@ -1093,6 +1099,7 @@ def config_to_env(config: dict, existing: dict[str, str]) -> dict[str, str]:
     env.setdefault("TRADINGAGENTS_CACHE_DIR", str(PROJECT_ROOT / "data" / "tradingagents_cache"))
     env.setdefault("TRADINGAGENTS_MEMORY_LOG_PATH", str(PROJECT_ROOT / "data" / "trading_memory.md"))
     env.setdefault("MCP_ENABLED", "1")
+    env.setdefault("MCP_API_KEY", "")
     env.setdefault("MCP_ACCESS_KEY", "")
     env.setdefault("MCP_CREATE_RUNS_PER_HOUR", "12")
     env.setdefault("MCP_ALLOWED_TOOLS", "")
@@ -1159,7 +1166,7 @@ def run_non_interactive(source: str, write_example: bool = True, write_sample: b
     print(f"  Alpha Vantage key: {mask_secret(env.get('ALPHA_VANTAGE_API_KEY', ''))}")
     mcp_on = env.get("MCP_ENABLED", "1").strip().lower() not in {"0", "false", "no", ""}
     print(f"  MCP server:        {'enabled' if mcp_on else 'disabled'}")
-    print(f"  MCP access key:    {mask_secret(env.get('MCP_ACCESS_KEY', ''))}")
+    print(f"  MCP access key:    {mask_secret(env.get('MCP_API_KEY', '') or env.get('MCP_ACCESS_KEY', ''))}")
     print()
     print("Setup complete.")
     return 0

@@ -4,9 +4,11 @@ The MCP layer is deliberately thin: tools validate bounded inputs, then call the
 same service functions used by the FastAPI routes. Long analyses stay in the
 existing worker queue, so ``create_analysis`` returns a run id immediately.
 
-Access is gated by a shared key: every HTTP request must send MCP_ACCESS_KEY as
-``Authorization: Bearer <key>`` or ``X-MCP-Key: <key>``. When MCP_ACCESS_KEY is
-unset the endpoint refuses every request (fail closed). Set MCP_ENABLED=0 to
+Access is gated by a shared key: every HTTP request must send the MCP key as
+``Authorization: Bearer <key>`` or ``X-MCP-Key: <key>``. The key is read from
+MCP_API_KEY (the real credential in .env) and MCP_ACCESS_KEY is recognised as an
+alias, so agents configured with either name work. When neither is set the
+endpoint refuses every request (fail closed). Set MCP_ENABLED=0 to
 disable the endpoint, or MCP_ALLOWED_TOOLS to a comma-separated allow-list when
 a deployment should be read-only. Never add provider secrets or raw filesystem
 access to this module.
@@ -572,9 +574,51 @@ _prune_disabled_tools()
 # Authentication helpers
 # ---------------------------------------------------------------------------
 
+# MCP_API_KEY is the real credential; MCP_ACCESS_KEY is an accepted alias so
+# other agents/clients that were configured with that name keep working.
+MCP_KEY_ENV_NAMES: tuple[str, ...] = ("MCP_API_KEY", "MCP_ACCESS_KEY")
+
+
+def _access_keys() -> list[str]:
+    """Every configured MCP key (deduplicated). Empty list means 'refuse everything'."""
+    keys: list[str] = []
+    for name in MCP_KEY_ENV_NAMES:
+        value = os.getenv(name, "").strip()
+        if value and value not in keys:
+            keys.append(value)
+    return keys
+
+
 def _access_key() -> str:
-    """Shared key every MCP caller must present. Empty means 'refuse everything'."""
-    return os.getenv("MCP_ACCESS_KEY", "").strip()
+    """Primary MCP key (MCP_API_KEY, else MCP_ACCESS_KEY). Empty when none is set."""
+    keys = _access_keys()
+    return keys[0] if keys else ""
+
+
+def sync_access_key_aliases() -> None:
+    """Expose the MCP key under both names in this process's environment.
+
+    Call after loading .env. If only MCP_API_KEY is set, MCP_ACCESS_KEY is filled
+    with the same value (and vice versa), so agents or subprocesses started by
+    this backend that read MCP_ACCESS_KEY get the real key. A name that is
+    already set is never overwritten.
+    """
+    primary = _access_key()
+    if not primary:
+        return
+    for name in MCP_KEY_ENV_NAMES:
+        if not os.getenv(name, "").strip():
+            os.environ[name] = primary
+
+
+def _key_matches(presented: str, keys: list[str]) -> bool:
+    """Constant-time check of the presented key against every configured key."""
+    presented_bytes = presented.encode("utf-8")
+    matched = False
+    for key in keys:
+        # Compare against all keys (no early exit) to keep timing uniform.
+        matched |= hmac.compare_digest(presented_bytes, key.encode("utf-8"))
+    return matched
 
 
 # ── FIX (prev-1): _presented_key → _extract_credentials
@@ -632,11 +676,11 @@ class AccessKeyMiddleware:
             await self.app(scope, receive, send)
             return
 
-        expected = _access_key()
+        expected = _access_keys()
         if not expected:
             # ── FIX 4: Audit log
-            _log.warning("MCP auth: no MCP_ACCESS_KEY configured — rejecting request from %s", _client_ip(scope))
-            await self._deny(send, "This engine has no MCP_ACCESS_KEY configured, so MCP is closed.")
+            _log.warning("MCP auth: no MCP_API_KEY / MCP_ACCESS_KEY configured — rejecting request from %s", _client_ip(scope))
+            await self._deny(send, "This engine has no MCP_API_KEY or MCP_ACCESS_KEY configured, so MCP is closed.")
             return
 
         # ── FIX (prev-1/2): Extract credentials separately and reject dual-header requests
@@ -648,7 +692,7 @@ class AccessKeyMiddleware:
             return
 
         presented = bearer or mcp_key or ""
-        if not presented or not hmac.compare_digest(presented, expected):
+        if not presented or not _key_matches(presented, expected):
             # ── FIX 4: Audit log
             _log.warning("MCP auth: invalid or missing key from %s", _client_ip(scope))
             await self._deny(send, "Missing or invalid MCP access key.")

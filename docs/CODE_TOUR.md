@@ -55,7 +55,7 @@ the drawing. Note the `build_ / write_ / get_` naming convention.
 Indicator maths, `detect_signals()` and `derive_levels()` — the source of the
 dashboard's "why this signal?" explanations.
 
-## 10. `app/initialSetup.py`
+## 10. `initialSetup.py`
 The `.env` generator. Interesting mainly for its four catalogues
 (`PROVIDER_MODELS`, `PROVIDER_DEFAULT_MODELS`, `PROVIDER_ENV_MAPPING`,
 `GENERIC_MODEL_ALIASES`) which the dashboard's setup page mirrors.

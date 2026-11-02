@@ -79,6 +79,7 @@ def test_mcp_rejects_missing_access_key(monkeypatch):
 
     from app.mcp_server import AccessKeyMiddleware
 
+    monkeypatch.delenv("MCP_API_KEY", raising=False)
     monkeypatch.setenv("MCP_ACCESS_KEY", "s3cret")
     called = []
 
@@ -95,6 +96,7 @@ def test_mcp_accepts_valid_access_key(monkeypatch):
 
     from app.mcp_server import AccessKeyMiddleware
 
+    monkeypatch.delenv("MCP_API_KEY", raising=False)
     monkeypatch.setenv("MCP_ACCESS_KEY", "s3cret")
     called = []
 
@@ -111,6 +113,7 @@ def test_mcp_closed_when_key_unset(monkeypatch):
     from app.mcp_server import AccessKeyMiddleware
 
     monkeypatch.delenv("MCP_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("MCP_API_KEY", raising=False)
     called = []
 
     async def inner(scope, receive, send):
@@ -119,3 +122,63 @@ def test_mcp_closed_when_key_unset(monkeypatch):
     sent = asyncio.run(_collect(AccessKeyMiddleware(inner), [(b"x-mcp-key", b"anything")]))
     assert sent[0]["status"] == 401
     assert not called
+
+
+def _run_auth(monkeypatch, env: dict, headers):
+    import asyncio
+
+    from app.mcp_server import AccessKeyMiddleware
+
+    for name in ("MCP_API_KEY", "MCP_ACCESS_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    called = []
+
+    async def inner(scope, receive, send):
+        called.append(scope)
+
+    sent = asyncio.run(_collect(AccessKeyMiddleware(inner), headers))
+    return called, sent
+
+
+def test_mcp_accepts_real_key_from_mcp_api_key(monkeypatch):
+    called, _ = _run_auth(monkeypatch, {"MCP_API_KEY": "real-key"}, [(b"authorization", b"Bearer real-key")])
+    assert called
+
+
+def test_mcp_api_key_rejects_wrong_key(monkeypatch):
+    called, sent = _run_auth(monkeypatch, {"MCP_API_KEY": "real-key"}, [(b"x-mcp-key", b"wrong")])
+    assert sent[0]["status"] == 401
+    assert not called
+
+
+def test_mcp_accepts_either_key_when_both_set(monkeypatch):
+    env = {"MCP_API_KEY": "real-key", "MCP_ACCESS_KEY": "agent-key"}
+    called_real, _ = _run_auth(monkeypatch, env, [(b"x-mcp-key", b"real-key")])
+    called_alias, _ = _run_auth(monkeypatch, env, [(b"authorization", b"Bearer agent-key")])
+    called_bad, sent_bad = _run_auth(monkeypatch, env, [(b"x-mcp-key", b"other")])
+    assert called_real and called_alias
+    assert not called_bad and sent_bad[0]["status"] == 401
+
+
+def test_sync_aliases_copies_mcp_api_key_to_mcp_access_key(monkeypatch):
+    import os
+
+    from app.mcp_server import sync_access_key_aliases
+
+    monkeypatch.delenv("MCP_ACCESS_KEY", raising=False)
+    monkeypatch.setenv("MCP_API_KEY", "real-key")
+    sync_access_key_aliases()
+    assert os.environ["MCP_ACCESS_KEY"] == "real-key"
+
+
+def test_sync_aliases_never_overwrites_existing_access_key(monkeypatch):
+    import os
+
+    from app.mcp_server import sync_access_key_aliases
+
+    monkeypatch.setenv("MCP_API_KEY", "real-key")
+    monkeypatch.setenv("MCP_ACCESS_KEY", "agent-key")
+    sync_access_key_aliases()
+    assert os.environ["MCP_ACCESS_KEY"] == "agent-key"

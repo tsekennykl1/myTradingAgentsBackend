@@ -26,13 +26,15 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.mcp_server import mcp, mcp_http_app
+from app.mcp_server import mcp, mcp_http_app, sync_access_key_aliases
 from app.routes import router
 from app.routes.models import router as models_router
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(BASE_DIR / ".env")
+# MCP_API_KEY is the real MCP key; also publish it as MCP_ACCESS_KEY (and vice versa).
+sync_access_key_aliases()
 
 # Patch hardcoded model defaults in tradingagents library (must run after load_dotenv)
 from app.patches.tradingagents_overrides import apply_all

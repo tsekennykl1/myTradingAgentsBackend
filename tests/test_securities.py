@@ -1,5 +1,7 @@
 """Stock directory: HK + US codes, names and market in one table."""
 
+import threading
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -23,6 +25,12 @@ File Creation Time: 1023202610:01||||||
 @pytest.fixture()
 def directory(tmp_path, monkeypatch):
     from app import securities, us_securities
+
+    # Earlier tests start the app, which preloads the real lists in a
+    # background thread. Let it finish so it can't write into this test's DB.
+    for thread in threading.enumerate():
+        if thread.name == "securities-preload":
+            thread.join(timeout=120)
 
     monkeypatch.setattr(securities, "DB_PATH", tmp_path / "app.db")
     monkeypatch.setattr(us_securities, "CACHE_DIR", tmp_path / "sources")

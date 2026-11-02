@@ -49,10 +49,11 @@ Three ideas explain almost everything:
 ```bash
 git clone https://github.com/tsekennykl1/myTradingAgentsBackend.git
 cd myTradingAgentsBackend
-python3 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate   # Python 3.12+ required (macOS: brew install python@3.12)
+pip install --upgrade pip
 pip install -r requirements.txt    # also pip-installs TradingAgents v0.4.0 from GitHub
 
-python app/initialSetup.py          # guided .env creation (API keys, models, MCP access key)
+python initialSetup.py          # guided .env creation (API keys, models, MCP access key)
 # or:  cp .env.example .env  and edit it by hand
 
 uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -90,7 +91,7 @@ Two settings matter for the dashboard:
 | `app/charts.py` | Plotly HTML and matplotlib PNG rendering. |
 | `app/artifacts.py` | Per-run files: market data, chart payloads, `result.html`. |
 | `app/worker.py` | The background threads that execute queued runs. |
-| `app/initialSetup.py` | Interactive and unattended `.env` generator and validator. Asks whether to enable the MCP server and then collects or generates `MCP_ACCESS_KEY` (min 24 chars, 64 recommended, no spaces). Non-interactive configs accept `mcp_enabled`, `mcp_access_key`, `mcp_allowed_tools`, `mcp_create_runs_per_hour`. |
+| `initialSetup.py` | Interactive and unattended `.env` generator and validator. Asks whether to enable the MCP server and then collects or generates `MCP_ACCESS_KEY` (min 24 chars, 64 recommended, no spaces). Non-interactive configs accept `mcp_enabled`, `mcp_access_key`, `mcp_allowed_tools`, `mcp_create_runs_per_hour`. |
 | `app/schemas/chart.py` | Typed response models for the chart endpoint. |
 | _(no local folder)_ | The upstream framework is the pip package `tradingagents`, installed from <https://github.com/TauricResearch/TradingAgents>. **Never edited.** |
 | `tests/` | pytest suite (`pytest -q`). |
@@ -186,7 +187,7 @@ running more than one instance behind a load balancer needs shared storage first
 
 ## 6. AI providers and keys
 
-`app/initialSetup.py` holds the catalogue the dashboard mirrors:
+`initialSetup.py` holds the catalogue the dashboard mirrors:
 
 - `PROVIDER_MODELS` — valid model names per provider
 - `PROVIDER_DEFAULT_MODELS` — sensible quick/deep defaults
@@ -225,9 +226,10 @@ calls `analyze_service.py` directly instead of maintaining separate state.
 
 > **Public-access warning.** There is no login on this MCP. Anyone who can reach
 > `/mcp` can read all stored analyses, start runs that spend configured LLM credit,
-> and cancel active runs. Every request must carry the shared `MCP_ACCESS_KEY`
-> (`Authorization: Bearer <key>` or `X-MCP-Key: <key>`); requests without it get
-> HTTP 401. If `MCP_ACCESS_KEY` is unset, `/mcp` refuses everything. Still
+> and cancel active runs. Every request must carry the shared MCP key
+> (`MCP_API_KEY`, or its alias `MCP_ACCESS_KEY`) as `Authorization: Bearer <key>`
+> or `X-MCP-Key: <key>`; requests without it get HTTP 401. If neither variable is
+> set, `/mcp` refuses everything. Still
 > restrict the backend at the firewall/reverse proxy when it should not be
 > internet-accessible.
 
@@ -235,7 +237,8 @@ Operator controls in `.env`:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MCP_ACCESS_KEY` | empty (closed) | Shared key every MCP caller must send; without it `/mcp` returns 401. Generate with `openssl rand -hex 32`. |
+| `MCP_API_KEY` | empty (closed) | The real shared key every MCP caller must send; without it (and without `MCP_ACCESS_KEY`) `/mcp` returns 401. Generate with `openssl rand -hex 32`. |
+| `MCP_ACCESS_KEY` | empty | Alias for the MCP key. Accepted by `/mcp` as well, and filled from `MCP_API_KEY` at startup when unset, so agents configured with this name keep working. |
 | `MCP_ENABLED` | `1` | Set `0` before startup to omit the endpoint. |
 | `MCP_ALLOWED_TOOLS` | empty (all) | Comma-separated allow-list; omit create/cancel for read-only access. |
 | `MCP_CREATE_RUNS_PER_HOUR` | `12` | Process-wide cap for public analysis creation. |

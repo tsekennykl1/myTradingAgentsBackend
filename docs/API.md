@@ -183,10 +183,12 @@ web page.
 
 ### Security
 
-`/mcp` is protected by a shared access key. Every HTTP request must send
-`MCP_ACCESS_KEY` as `Authorization: Bearer <key>` or `X-MCP-Key: <key>`; anything
-else is rejected with HTTP 401 before the MCP session manager runs. When
-`MCP_ACCESS_KEY` is empty the endpoint is fully closed (fail closed). The key is
+`/mcp` is protected by a shared access key. The real key lives in `.env` as
+`MCP_API_KEY`; `MCP_ACCESS_KEY` is recognised as an alias (if both are set,
+either value is accepted). Every HTTP request must send the key as
+`Authorization: Bearer <key>` or `X-MCP-Key: <key>`; anything else is rejected
+with HTTP 401 before the MCP session manager runs. When neither variable is set
+the endpoint is fully closed (fail closed). The key is
 compared in constant time.
 
 Example call:
@@ -200,7 +202,7 @@ curl -s https://engine.example.com/mcp \
 ```
 
 The key is shared, not per-user, so treat it like a password and rotate it by
-changing `MCP_ACCESS_KEY` and restarting. `FRONTEND_ORIGINS` is CORS, not MCP
+changing `MCP_API_KEY` (and `MCP_ACCESS_KEY` if you set it separately) and restarting. `FRONTEND_ORIGINS` is CORS, not MCP
 authentication. Use network access controls as well for private deployments, set
 `MCP_ENABLED=0` to disable MCP, or use `MCP_ALLOWED_TOOLS` to expose a smaller
 tool set. No MCP tool returns secrets or changes provider configuration.
