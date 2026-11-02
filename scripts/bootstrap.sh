@@ -62,7 +62,7 @@ DEPLOY_USER="${DEPLOY_USER:-ec2-user}"
 
 # ★ NEW — TradingAgents engine: pinned Git repo + tag
 TA_REPO="${TA_REPO:-https://github.com/TauricResearch/TradingAgents.git}"
-TA_TAG="${TA_TAG:-v0.4.0}"
+TA_TAG="${TA_TAG:-v0.7.1}"
 
 # ★ NEW — yfinance minimum version (crumb/cookie auth rewrite)
 MIN_YF_MAJOR=1
@@ -519,7 +519,8 @@ fi
 # ★ NEW (Fix 5) — Install tradingagents from GitHub (pinned tag) ─────
 #   The PyPI package either doesn't exist or lags behind the GitHub repo.
 #   Installed AFTER requirements.txt so it wins over any transitive dep.
-#   Bump TA_TAG (e.g. to v0.5.0) via env var — no code edit required.
+#   Bump TA_TAG via env var to try another release; app/fast_path.py and
+#   tests/test_tradingagents_compat.py target v0.7.x.
 echo "Installing tradingagents from ${TA_REPO} @ ${TA_TAG} …"
 "${APP_ROOT}/.venv/bin/pip" install --no-cache-dir \
   "tradingagents @ git+${TA_REPO}@${TA_TAG}"

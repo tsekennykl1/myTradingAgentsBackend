@@ -13,7 +13,7 @@ Wall time is dominated by LLM turns. Three knobs, all on by default:
 | Env var | Default | Effect |
 | --- | --- | --- |
 | `TRADINGAGENTS_PARALLEL_ANALYSTS` | `1` | Runs the selected analysts concurrently (each in its own single-analyst graph and message history) instead of chaining them. Set to `0` to restore the stock sequential graph. |
-| `TRADINGAGENTS_DATA_CACHE` | `1` | Memoizes `dataflows.interface.route_to_vendor`, so repeat calls for the same ticker+date skip the network. |
+| `TRADINGAGENTS_DATA_CACHE` | `1` | Memoizes `dataflows.router.route_to_vendor` (and the copy the data tools import), so repeat calls for the same ticker+date skip the network. "Vendor unavailable" answers are not cached. |
 | `TRADINGAGENTS_DATA_CACHE_TTL` | `21600` | Cache lifetime in seconds (6h). |
 
 Debate rounds are derived from research depth: Shallow/Medium use one research

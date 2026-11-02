@@ -1,7 +1,8 @@
 """Structural tests for the parallel analyst fast path.
 
 The real TradingAgents package is not installed in CI, so the graph pieces are
-stubbed with the same shapes the engine exposes. LangGraph itself is real, so
+stubbed with the same shapes TradingAgents v0.7.x exposes (see
+tests/test_tradingagents_compat.py for the checks against the real package). LangGraph itself is real, so
 the node/edge wiring is genuinely exercised.
 """
 
@@ -37,24 +38,23 @@ class State(TypedDict, total=False):
     investment_debate_state: dict
     risk_debate_state: dict
     final_trade_decision: str
+    past_context: str
+    memory_note: str
 
 
 @dataclass(frozen=True)
 class Spec:
     key: str
     agent_node: str
-    clear_node: str
-    tool_node: str
     report_key: str
+    tools: tuple = ()
 
 
 SPECS = {
-    "market": Spec("market", "Market Analyst", "Msg Clear Market", "tools_market", "market_report"),
-    "social": Spec("social", "Sentiment Analyst", "Msg Clear Sentiment", "tools_social", "sentiment_report"),
-    "news": Spec("news", "News Analyst", "Msg Clear News", "tools_news", "news_report"),
-    "fundamentals": Spec(
-        "fundamentals", "Fundamentals Analyst", "Msg Clear Fundamentals", "tools_fundamentals", "fundamentals_report"
-    ),
+    "market": Spec("market", "Market Analyst", "market_report"),
+    "social": Spec("social", "Sentiment Analyst", "sentiment_report"),
+    "news": Spec("news", "News Analyst", "news_report"),
+    "fundamentals": Spec("fundamentals", "Fundamentals Analyst", "fundamentals_report"),
 }
 
 
@@ -64,12 +64,6 @@ class Plan:
 
 
 class ConditionalLogic:
-    def __getattr__(self, name):
-        if name.startswith("should_continue_") and name.split("_")[-1] in SPECS:
-            key = name.rsplit("_", 1)[-1]
-            return lambda state, key=key: SPECS[key].clear_node
-        raise AttributeError(name)
-
     def should_continue_debate(self, state):
         return "Research Manager"
 
@@ -109,7 +103,23 @@ class FakeGraph:
     def __init__(self):
         self.conditional_logic = ConditionalLogic()
         self.propagator = Propagator()
-        self.tool_nodes = {key: (lambda state: {}) for key in SPECS}
+        self.graph_setup = types.SimpleNamespace(max_tool_rounds=20)
+        self.recorded: list[tuple[str, str, str]] = []
+
+    def _memory_step(self, state):
+        return {"past_context": f"lessons for {state['company_of_interest']}", "memory_note": ""}
+
+    def record_decision(self, ticker, date, final_state):
+        self.recorded.append((ticker, date, final_state["final_trade_decision"]))
+
+
+def _analyst_graph(spec, agent, max_tool_rounds):
+    """Stand-in for tradingagents.graph.setup._analyst_graph (one node, no tools)."""
+    workflow = lg.StateGraph(State)
+    workflow.add_node("agent", agent)
+    workflow.add_edge(lg.START, "agent")
+    workflow.add_edge("agent", lg.END)
+    return workflow.compile()
 
 
 def _modules():
@@ -130,12 +140,12 @@ def _modules():
     return {
         "langgraph.graph": lg,
         "tradingagents.agents": agents,
-        "tradingagents.agents.utils.agent_states": types.SimpleNamespace(AgentState=State),
-        "tradingagents.agents.utils.agent_utils": types.SimpleNamespace(create_msg_delete=lambda: (lambda s: {})),
+        "tradingagents.agents.state": types.SimpleNamespace(AgentState=State),
         "tradingagents.graph.analyst_execution": types.SimpleNamespace(
             build_analyst_execution_plan=lambda keys: Plan(keys)
         ),
         "tradingagents.graph.setup": types.SimpleNamespace(
+            _analyst_graph=_analyst_graph,
             DEBATE_PATH_MAP={
                 "Bull Researcher": "Bull Researcher",
                 "Bear Researcher": "Bear Researcher",
@@ -199,25 +209,79 @@ def test_subset_of_analysts_leaves_other_reports_empty():
     assert decision == "BUY"
 
 
+def _cache_modules(route):
+    router = types.SimpleNamespace(route_to_vendor=route)
+    # The data tools bind route_to_vendor by name, like tradingagents.agents.tools.
+    tools = types.SimpleNamespace(route_to_vendor=route)
+    modules = {"tradingagents.dataflows.router": router, "tradingagents.agents.tools": tools}
+
+    def import_module(name):
+        if name not in modules:
+            raise ImportError(name)
+        return modules[name]
+
+    return router, tools, import_module
+
+
 def test_vendor_cache_memoizes_by_arguments():
     calls: list[tuple] = []
-
-    interface = types.SimpleNamespace(
-        route_to_vendor=lambda name, *a, **k: (calls.append((name, a)), f"data:{name}")[1]
+    router, tools, import_module = _cache_modules(
+        lambda name, *a, **k: (calls.append((name, a)), f"data:{name}")[1]
     )
     fast_path._CACHE.clear()
     fast_path._CACHE_INSTALLED = False
 
-    assert fast_path.install_vendor_cache(lambda _name: interface)
+    try:
+        assert fast_path.install_vendor_cache(import_module)
 
-    assert interface.route_to_vendor("get_stock_data", "AAPL", "2026-01-01", "2026-09-15") == "data:get_stock_data"
-    assert interface.route_to_vendor("get_stock_data", "AAPL", "2026-01-01", "2026-09-15") == "data:get_stock_data"
-    interface.route_to_vendor("get_stock_data", "MSFT", "2026-01-01", "2026-09-15")
+        assert tools.route_to_vendor("get_stock_data", "AAPL", "2026-01-01", "2026-09-15") == "data:get_stock_data"
+        assert router.route_to_vendor("get_stock_data", "AAPL", "2026-01-01", "2026-09-15") == "data:get_stock_data"
+        tools.route_to_vendor("get_stock_data", "MSFT", "2026-01-01", "2026-09-15")
 
-    assert len(calls) == 2, calls
+        # The tools module is patched too, so its repeat call is served from the cache.
+        assert len(calls) == 2, calls
+    finally:
+        fast_path._CACHE.clear()
+        fast_path._CACHE_INSTALLED = False
 
+
+def test_vendor_cache_does_not_keep_outage_answers():
+    calls: list[str] = []
+    answers = iter(["DATA_UNAVAILABLE: no configured vendor could serve get_news right now", "news"])
+    _router, tools, import_module = _cache_modules(
+        lambda name, *a, **k: (calls.append(name), next(answers))[1]
+    )
     fast_path._CACHE.clear()
     fast_path._CACHE_INSTALLED = False
+
+    try:
+        assert fast_path.install_vendor_cache(import_module)
+        assert tools.route_to_vendor("get_news", "AAPL").startswith("DATA_UNAVAILABLE")
+        # The outage was not cached, so the next call asks the vendor again.
+        assert tools.route_to_vendor("get_news", "AAPL") == "news"
+        assert tools.route_to_vendor("get_news", "AAPL") == "news"
+        assert len(calls) == 2, calls
+    finally:
+        fast_path._CACHE.clear()
+        fast_path._CACHE_INSTALLED = False
+
+
+def test_memory_log_lessons_reach_the_portfolio_manager_and_decision_is_recorded():
+    graph = FakeGraph()
+    final_state, decision = fast_path.run_analysts_in_parallel(
+        graph, "AAPL", "2026-09-15", "stock", ("market",), _import_module, _extract_reports, None,
+    )
+    assert final_state["past_context"] == "lessons for AAPL"
+    assert graph.recorded == [("AAPL", "2026-09-15", "BUY")]
+
+
+def test_partial_pipeline_is_not_recorded_in_the_memory_log():
+    graph = FakeGraph()
+    fast_path.run_analysts_in_parallel(
+        graph, "AAPL", "2026-09-15", "stock", ("market",), _import_module, _extract_reports, None,
+        ["market", "trader", "portfolio_manager"],
+    )
+    assert graph.recorded == []
 
 
 def test_skipped_stages_are_not_executed():

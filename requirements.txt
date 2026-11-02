@@ -1,5 +1,5 @@
-# Requires Python 3.12 or newer (TradingAgents and yfinance >=1.5 do not
-# install on the macOS system Python 3.9). Create the venv with:
+# Requires Python 3.12 or newer (TradingAgents 0.7.1 needs 3.11+, and none of
+# this installs on the macOS system Python 3.9). Create the venv with:
 #   python3.12 -m venv .venv && source .venv/bin/activate
 #
 # ─── Core Framework ───────────────────────────────────────────
@@ -8,19 +8,19 @@ uvicorn[standard]>=0.29
 pydantic>=2.0
 
 # ─── Market Data ──────────────────────────────────────────────
-# ★ NEW (Fix 4) — yfinance >=1.5 includes the rewritten cookie/crumb
+# ★ NEW (Fix 4) — yfinance 1.x includes the rewritten cookie/crumb
 # auth layer that fixes the recurring HTTP 401 "Invalid Crumb" errors.
-# The 0.2.x line is unmaintained; 1.x rewrote the session layer.
-yfinance>=1.5
+# TradingAgents 0.7.1 itself requires 1.7 or later.
+yfinance>=1.7
 
 # ─── TradingAgents Engine ────────────────────────────────────
 # Not on PyPI — installed from GitHub at the same pinned tag that
 # scripts/bootstrap.sh uses (TA_TAG). bootstrap.sh re-installs it after
 # this file, so an overridden TA_TAG still wins on servers.
-tradingagents @ https://github.com/TauricResearch/TradingAgents/archive/refs/tags/v0.4.0.tar.gz
+tradingagents @ https://github.com/TauricResearch/TradingAgents/archive/refs/tags/v0.7.1.tar.gz
 
 # ─── Data / Numeric ──────────────────────────────────────────
-pandas>=2.0
+pandas>=3.0.6         # TradingAgents 0.7.1 requires pandas 3
 numpy>=1.24
 
 # ─── Charting & Artifacts ────────────────────────────────────
@@ -30,11 +30,12 @@ plotly>=5.20          # interactive chart (app/charts.py)
 kaleido>=0.2          # plotly PNG export
 
 # ─── AI / LLM Engine ─────────────────────────────────────────
-langchain>=0.2
-langchain-openai>=0.1
-langchain-anthropic>=0.1
-langchain-google-genai>=0.1
-langgraph>=0.1
+# Minimums are the ones TradingAgents 0.7.1 declares.
+langchain-core>=1.6.5
+langchain-openai>=1.6.6
+langchain-anthropic>=1.7.4
+langchain-google-genai>=4.4.0
+langgraph>=1.2.12
 openai>=1.14
 
 # ─── MCP Server ──────────────────────────────────────────────
