@@ -51,7 +51,7 @@ git clone https://github.com/tsekennykl1/myTradingAgentsBackend.git
 cd myTradingAgentsBackend
 python3.12 -m venv .venv && source .venv/bin/activate   # Python 3.12+ required (macOS: brew install python@3.12)
 pip install --upgrade pip
-pip install -r requirements.txt    # also pip-installs TradingAgents v0.4.0 from GitHub
+pip install -r requirements.txt    # also pip-installs TradingAgents v0.7.1 from GitHub
 
 python initialSetup.py          # guided .env creation (API keys, models, MCP access key)
 # or:  cp .env.example .env  and edit it by hand

@@ -450,11 +450,11 @@ def _coerce_max_debate_rounds(research_depth: str | None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# ★ FIX 1: v0.4.0 provider normalisation (plain string, not LLMProvider enum)
+# ★ FIX 1: v0.7.x provider normalisation (plain string, not LLMProvider enum)
 # ---------------------------------------------------------------------------
 
 def _normalize_provider(value: str | None) -> str:
-    """Map backend provider names to v0.4.0 llm_provider config strings."""
+    """Map backend provider names to v0.7.x llm_provider config strings."""
     raw = str(value or "").strip().lower()
     if not raw:
         return "openai"
@@ -486,11 +486,11 @@ def _normalize_provider(value: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# ★ FIX 2: v0.4.0 uses output_language as a plain string, not BCP 47 enum
+# ★ FIX 2: v0.7.x uses output_language as a plain string, not BCP 47 enum
 # ---------------------------------------------------------------------------
 
 def _normalize_language(value: str | None) -> str:
-    """Map human-readable language names to v0.4.0 output_language strings."""
+    """Map human-readable language names to v0.7.x output_language strings."""
     raw = str(value or "").strip().lower()
     mapping = {
         "english": "English",
@@ -516,7 +516,7 @@ def _normalize_language(value: str | None) -> str:
 # ---------------------------------------------------------------------------
 # ★ FIX 3: build a plain dict config from DEFAULT_CONFIG (not a Pydantic model)
 #
-# TauricResearch/TradingAgents v0.4.0 API:
+# TauricResearch/TradingAgents v0.7.x API:
 #   from tradingagents.default_config import DEFAULT_CONFIG
 #   config = DEFAULT_CONFIG.copy()
 #   config["llm_provider"] = "openai"
@@ -526,7 +526,7 @@ def _normalize_language(value: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_tradingagents_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Build a config dict for TauricResearch/TradingAgents v0.4.0.
+    """Build a config dict for TauricResearch/TradingAgents v0.7.x.
 
     Returns a plain dict (a copy of DEFAULT_CONFIG with overrides applied).
     """
@@ -549,16 +549,37 @@ def _build_tradingagents_config(config: dict[str, Any]) -> dict[str, Any]:
     ta_config["max_risk_discuss_rounds"] = (
         2 if str(research_depth or "").strip().lower() == "deep" else 1
     )
-    ta_config["max_recur_limit"] = 50
+    # v0.7.x refuses a recursion limit at or below 2 * max_tool_rounds + 2
+    # (each analyst tool round is two graph steps), so keep it clear of that.
+    max_tool_rounds = int(ta_config.get("max_tool_rounds") or 20)
+    ta_config["max_recur_limit"] = max(50, 2 * max_tool_rounds + 10)
     ta_config["output_language"] = _normalize_language(language)
 
     return ta_config
 
 
-def _normalize_decision_payload(decision: Any) -> dict[str, Any]:
+#: The Portfolio Manager's 5-tier ratings, plus REVIEW when it gave none.
+RATINGS = ("buy", "overweight", "hold", "underweight", "sell", "review")
+
+
+def _rating_action(value: Any) -> str | None:
+    """'Buy' / 'Overweight' / ... / 'REVIEW' as the lowercase action the API reports."""
+    text = str(value or "").strip().lower()
+    return text if text in RATINGS else None
+
+
+def _normalize_decision_payload(decision: Any, final_state: Any = None) -> dict[str, Any]:
     if isinstance(decision, dict):
         return decision
-    return {"raw": decision}
+    payload: dict[str, Any] = {"raw": decision}
+    # v0.5.2+ propagate() returns the rating itself as its second value, and
+    # final_state["final_rating"] carries it too.
+    rating = _rating_action(decision)
+    if rating is None and isinstance(final_state, dict):
+        rating = _rating_action(final_state.get("final_rating"))
+    if rating is not None:
+        payload["rating"] = rating
+    return payload
 
 
 def _extract_reports_from_state(final_state: Any) -> dict[str, str]:
@@ -597,7 +618,7 @@ def _extract_reports_from_state(final_state: Any) -> dict[str, str]:
 
 
 def _normalize_propagate_result(final_state: Any, decision: Any, selected_analysts: tuple[str, ...]) -> dict[str, Any]:
-    decision_dict = _normalize_decision_payload(decision)
+    decision_dict = _normalize_decision_payload(decision, final_state)
     reports = _extract_reports_from_state(final_state)
 
     stance_map = {
@@ -762,10 +783,24 @@ def _invoke_graph_class(cls: Any, config: dict[str, Any], on_update: Optional[Ca
     stream_graph = getattr(graph, "graph", None)
     stream = getattr(stream_graph, "stream", None)
     propagator = getattr(graph, "propagator", None)
-    if on_update and callable(stream) and propagator is not None:
+    stream_run = getattr(graph, "stream_run", None)
+    if on_update and callable(stream_run) and propagator is not None:
+        # v0.7.x: stream_run serves the graph's own config to every tool and
+        # yields each analyst's report as soon as that analyst files it.
+        init_state = fast_path.create_run_state_compat(graph, ticker, analysis_date, asset_type)
+        final_state: dict[str, Any] = {}
+        for _messages, chunk in stream_run(init_state, **propagator.get_graph_args()):
+            if not isinstance(chunk, dict):
+                continue
+            final_state.update(chunk)
+            for report_name, content in _extract_reports_from_state(chunk).items():
+                on_update(report_name, content)
+        fast_path.record_run(graph, ticker, analysis_date, final_state)
+        result = (final_state, fast_path.decision_rating(final_state, _import_module))
+    elif on_update and callable(stream) and propagator is not None:
         init_state = fast_path.create_initial_state_compat(propagator, ticker, analysis_date, asset_type=asset_type)
         args = propagator.get_graph_args()
-        final_state: dict[str, Any] = {}
+        final_state = {}
         for chunk in stream(init_state, **args):
             if not isinstance(chunk, dict):
                 continue
